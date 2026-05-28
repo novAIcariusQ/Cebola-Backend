@@ -3,7 +3,4 @@ fastapi-cli==0.0.7
 psycopg2-binary==2.9.12
 python-multipart==0.0.9
 pyjwt==2.8.0
-<<<<<<< HEAD
-=======
 uvicorn[standard]==0.34.0
->>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)

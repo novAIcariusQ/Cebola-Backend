@@ -3,10 +3,7 @@ import uuid
 import datetime
 import shutil
 import logging
-<<<<<<< HEAD
-=======
 import random
->>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -79,8 +76,6 @@ class ProductFormValues(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
-<<<<<<< HEAD
-=======
 class CustomerOrderItemPayload(BaseModel):
     productId: str
     quantity: int
@@ -88,8 +83,6 @@ class CustomerOrderItemPayload(BaseModel):
 class CustomerOrderPayload(BaseModel):
     shopId: str
     items: List[CustomerOrderItemPayload]
-
->>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 
 # --- RESPONSE FORMATTING HELPERS ---
 
@@ -163,8 +156,6 @@ def format_order_item(row: dict) -> Optional[dict]:
         "priceAtTime": float(row["price_at_time"])
     }
 
-<<<<<<< HEAD
-=======
 def format_customer_shop(row: dict) -> Optional[dict]:
     if not row:
         return None
@@ -207,8 +198,6 @@ def format_customer_order_response(order_id: str, guest_order_id: str) -> dict:
 
 def _generate_guest_order_id() -> str:
     return f"{random.randint(10000000, 99999999)}"
-
->>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 
 # --- USER AUTHENTICATION ENDPOINTS ---
 
@@ -650,8 +639,6 @@ def update_order_status(
     return format_order(refreshed_order, items)
 
 
-<<<<<<< HEAD
-=======
 # --- CUSTOMER STOREFRONT ENDPOINTS (PUBLIC) ---
 
 @app.get("/api/shops")
@@ -870,7 +857,6 @@ def get_customer_order(orderId: str):
     return format_customer_order_response(order_row["id"], guest_order_id)
 
 
->>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 # --- UPLOAD & ARTIFICIAL INTELLIGENCE ENDPOINTS ---
 
 @app.post("/api/upload")

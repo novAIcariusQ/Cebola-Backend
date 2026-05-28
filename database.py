@@ -63,11 +63,7 @@ class DatabaseManager:
             user=db_config.username,
             password=db_config.password,
             host=db_config.ip,
-<<<<<<< HEAD
-            port="5432"
-=======
             port=getattr(db_config, "port", "5432"),
->>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
         )
 
     def _get_sqlite_connection(self):
