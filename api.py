@@ -3,6 +3,10 @@ import uuid
 import datetime
 import shutil
 import logging
+<<<<<<< HEAD
+=======
+import random
+>>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -75,6 +79,17 @@ class ProductFormValues(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
+<<<<<<< HEAD
+=======
+class CustomerOrderItemPayload(BaseModel):
+    productId: str
+    quantity: int
+
+class CustomerOrderPayload(BaseModel):
+    shopId: str
+    items: List[CustomerOrderItemPayload]
+
+>>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 
 # --- RESPONSE FORMATTING HELPERS ---
 
@@ -148,6 +163,52 @@ def format_order_item(row: dict) -> Optional[dict]:
         "priceAtTime": float(row["price_at_time"])
     }
 
+<<<<<<< HEAD
+=======
+def format_customer_shop(row: dict) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "title": row["name"],
+        "description": row["description"],
+        "logoUrl": row.get("logo_url"),
+        "isAvailable": bool(row["is_active"]),
+    }
+
+def format_customer_product(row: dict, shop_name: str) -> Optional[dict]:
+    if not row:
+        return None
+    quantity = int(row["quantity"])
+    is_available = bool(row["is_available"]) and quantity > 0
+    return {
+        "id": row["id"],
+        "shopId": row["shop_id"],
+        "shopTitle": shop_name,
+        "title": row["title"],
+        "description": row["description"],
+        "price": float(row["price"]),
+        "quantity": quantity,
+        "photoUrl": row.get("photo_url"),
+        "isAvailable": is_available,
+    }
+
+def format_customer_order_response(order_id: str, guest_order_id: str) -> dict:
+    payment_template = os.getenv(
+        "PAYMENT_URL_TEMPLATE",
+        "https://checkout.stripe.com/c/pay/{order_id}",
+    )
+    payment_url = payment_template.format(order_id=order_id, guest_order_id=guest_order_id)
+    return {
+        "id": order_id,
+        "guestOrderId": guest_order_id,
+        "paymentUrl": payment_url,
+    }
+
+def _generate_guest_order_id() -> str:
+    return f"{random.randint(10000000, 99999999)}"
+
+>>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 
 # --- USER AUTHENTICATION ENDPOINTS ---
 
@@ -589,6 +650,227 @@ def update_order_status(
     return format_order(refreshed_order, items)
 
 
+<<<<<<< HEAD
+=======
+# --- CUSTOMER STOREFRONT ENDPOINTS (PUBLIC) ---
+
+@app.get("/api/shops")
+def list_public_shops(page: int = 1, limit: int = 10, q: Optional[str] = None):
+    offset = (page - 1) * limit
+    if q:
+        search_pattern = f"%{q.lower()}%"
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM shops WHERE is_active = TRUE "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s)",
+            (search_pattern, search_pattern),
+        )
+        rows = db.execute_query(
+            "SELECT * FROM shops WHERE is_active = TRUE "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s) "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (search_pattern, search_pattern, limit, offset),
+        )
+    else:
+        count_row = db.execute_one("SELECT COUNT(*) as count FROM shops WHERE is_active = TRUE")
+        rows = db.execute_query(
+            "SELECT * FROM shops WHERE is_active = TRUE ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (limit, offset),
+        )
+
+    total = count_row.get("count", 0) if count_row else 0
+    return {
+        "items": [format_customer_shop(row) for row in rows],
+        "total": total,
+    }
+
+
+@app.get("/api/shops/{shopId}")
+def get_public_shop(shopId: str):
+    row = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (shopId,),
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    return format_customer_shop(row)
+
+
+@app.get("/api/shops/{shopId}/products")
+def list_public_shop_products(
+    shopId: str,
+    page: int = 1,
+    limit: int = 100,
+    q: Optional[str] = None,
+):
+    shop = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (shopId,),
+    )
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    offset = (page - 1) * limit
+    if q:
+        search_pattern = f"%{q.lower()}%"
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0 "
+            "AND (LOWER(title) LIKE %s OR LOWER(description) LIKE %s)",
+            (shopId, search_pattern, search_pattern),
+        )
+        rows = db.execute_query(
+            "SELECT * FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0 "
+            "AND (LOWER(title) LIKE %s OR LOWER(description) LIKE %s) "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (shopId, search_pattern, search_pattern, limit, offset),
+        )
+    else:
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0",
+            (shopId,),
+        )
+        rows = db.execute_query(
+            "SELECT * FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0 "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (shopId, limit, offset),
+        )
+
+    total = count_row.get("count", 0) if count_row else 0
+    shop_name = shop["name"]
+    return {
+        "items": [format_customer_product(row, shop_name) for row in rows],
+        "total": total,
+    }
+
+
+@app.get("/api/shops/{shopId}/products/{productId}")
+def get_public_product(shopId: str, productId: str):
+    shop = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (shopId,),
+    )
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    row = db.execute_one(
+        "SELECT * FROM products WHERE id = %s AND shop_id = %s AND is_available = TRUE AND quantity > 0",
+        (productId, shopId),
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    return format_customer_product(row, shop["name"])
+
+
+@app.post("/api/orders")
+def create_customer_order(payload: CustomerOrderPayload):
+    if not payload.items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Order must contain at least one item",
+        )
+
+    shop = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (payload.shopId,),
+    )
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    line_items = []
+    total_amount = 0.0
+    total_quantity = 0
+
+    for item in payload.items:
+        if item.quantity < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Each item quantity must be at least 1",
+            )
+
+        product = db.execute_one(
+            "SELECT * FROM products WHERE id = %s AND shop_id = %s",
+            (item.productId, payload.shopId),
+        )
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Product not found: {item.productId}",
+            )
+        if not product["is_available"] or int(product["quantity"]) < item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient stock for product: {product['title']}",
+            )
+
+        line_total = float(product["price"]) * item.quantity
+        total_amount += line_total
+        total_quantity += item.quantity
+        line_items.append((product, item.quantity, line_total))
+
+    order_id = str(uuid.uuid4())
+    guest_order_id = _generate_guest_order_id()
+    created_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    db.execute_write(
+        "INSERT INTO orders (id, shop_id, user_id, guest_order_id, customer_name, customer_email, "
+        "customer_phone, total_amount, total_quantity, status, qr_code_data, created_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            order_id,
+            payload.shopId,
+            None,
+            guest_order_id,
+            None,
+            None,
+            None,
+            total_amount,
+            total_quantity,
+            "pending",
+            f"order:{order_id}",
+            created_at,
+        ),
+    )
+
+    for product, quantity, line_total in line_items:
+        item_id = f"item-{uuid.uuid4().hex[:8]}"
+        price_at_time = float(product["price"])
+        db.execute_write(
+            "INSERT INTO order_items (id, order_id, product_id, product_title, product_logo, quantity, price_at_time) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (
+                item_id,
+                order_id,
+                product["id"],
+                product["title"],
+                product.get("photo_url"),
+                quantity,
+                price_at_time,
+            ),
+        )
+
+        new_quantity = int(product["quantity"]) - quantity
+        is_available = new_quantity > 0 and bool(product["is_available"])
+        db.execute_write(
+            "UPDATE products SET quantity = %s, is_available = %s WHERE id = %s",
+            (new_quantity, is_available, product["id"]),
+        )
+
+    return format_customer_order_response(order_id, guest_order_id)
+
+
+@app.get("/api/orders/{orderId}")
+def get_customer_order(orderId: str):
+    order_row = db.execute_one(
+        "SELECT * FROM orders WHERE id = %s OR guest_order_id = %s",
+        (orderId, orderId),
+    )
+    if not order_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    guest_order_id = order_row.get("guest_order_id") or ""
+    return format_customer_order_response(order_row["id"], guest_order_id)
+
+
+>>>>>>> d75227e (Add customer storefront API endpoints and Docker Compose with PostgreSQL)
 # --- UPLOAD & ARTIFICIAL INTELLIGENCE ENDPOINTS ---
 
 @app.post("/api/upload")
