@@ -43,9 +43,10 @@ def create_access_token(data: dict) -> str:
 def verify_token(token: str) -> dict:
     """Decodes and verifies a JWT token. Handles optional Bearer prefix."""
     try:
-        if token.startswith("Bearer "):
-            token = token[7:]
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        normalized = token.strip()
+        while normalized.lower().startswith("bearer "):
+            normalized = normalized[7:].strip()
+        payload = jwt.decode(normalized, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
     except jwt.PyJWTError as e:
         logger.warning(f"JWT verification failed: {e}")

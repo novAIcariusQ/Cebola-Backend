@@ -226,7 +226,7 @@ def register(payload: RegisterPayload):
     token = create_access_token({"sub": user_id})
     
     return {
-        "token": f"Bearer {token}",
+        "token": token,
         "user": format_user(user)
     }
 
@@ -241,7 +241,7 @@ def login(payload: LoginPayload):
     
     token = create_access_token({"sub": user["id"]})
     return {
-        "token": f"Bearer {token}",
+        "token": token,
         "user": format_user(user)
     }
 
@@ -275,27 +275,39 @@ def change_password(payload: ChangePasswordPayload, current_user: dict = Depends
 # --- SHOP MANAGEMENT ENDPOINTS ---
 
 @app.get("/api/merchant/shops")
-def get_shops(page: int = 1, limit: int = 10, q: Optional[str] = None):
+def get_shops(
+    page: int = 1,
+    limit: int = 10,
+    q: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     offset = (page - 1) * limit
+    owner_id = current_user["id"]
     if q:
         search_pattern = f"%{q.lower()}%"
         count_row = db.execute_one(
-            "SELECT COUNT(*) as count FROM shops WHERE LOWER(name) LIKE %s OR LOWER(description) LIKE %s",
-            (search_pattern, search_pattern)
+            "SELECT COUNT(*) as count FROM shops WHERE owner_id = %s "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s)",
+            (owner_id, search_pattern, search_pattern),
         )
         total = count_row.get("count", 0) if count_row else 0
         
         rows = db.execute_query(
-            "SELECT * FROM shops WHERE LOWER(name) LIKE %s OR LOWER(description) LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
-            (search_pattern, search_pattern, limit, offset)
+            "SELECT * FROM shops WHERE owner_id = %s "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s) "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (owner_id, search_pattern, search_pattern, limit, offset),
         )
     else:
-        count_row = db.execute_one("SELECT COUNT(*) as count FROM shops")
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM shops WHERE owner_id = %s",
+            (owner_id,),
+        )
         total = count_row.get("count", 0) if count_row else 0
         
         rows = db.execute_query(
-            "SELECT * FROM shops ORDER BY created_at DESC LIMIT %s OFFSET %s",
-            (limit, offset)
+            "SELECT * FROM shops WHERE owner_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (owner_id, limit, offset),
         )
         
     return {
