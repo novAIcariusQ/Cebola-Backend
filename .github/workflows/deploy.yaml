@@ -1,0 +1,64 @@
+name: Deploy
+
+on:
+  push:
+    branches: [dev, main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve target environment
+        id: target
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "env_name=prod" >> "$GITHUB_OUTPUT"
+            echo "remote_dir=/opt/cebola/prod/backend" >> "$GITHUB_OUTPUT"
+            echo "service=cebola-backend-prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "env_name=dev" >> "$GITHUB_OUTPUT"
+            echo "remote_dir=/opt/cebola/dev/backend" >> "$GITHUB_OUTPUT"
+            echo "service=cebola-backend-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare remote directory
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: mkdir -p ${{ steps.target.outputs.remote_dir }}/uploads
+
+      - name: Upload backend files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: api.py,database.py,auth_utils.py,dbInfo.py,requirements.txt
+          target: ${{ steps.target.outputs.remote_dir }}
+          overwrite: true
+
+      - name: Install dependencies and restart API
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            cd ${{ steps.target.outputs.remote_dir }}
+            if [ ! -d venv ]; then
+              python3 -m venv venv
+            fi
+            ./venv/bin/pip install --upgrade pip
+            ./venv/bin/pip install -r requirements.txt
+            systemctl restart ${{ steps.target.outputs.service }}
+            systemctl is-active --quiet ${{ steps.target.outputs.service }}
