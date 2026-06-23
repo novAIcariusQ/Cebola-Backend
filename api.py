@@ -17,6 +17,7 @@ from auth_utils import (
     create_access_token,
     get_current_user
 )
+from ai_utils import AiServiceError, describe_product_from_image
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -898,59 +899,26 @@ def upload_image(file: UploadFile = File(...)):
 
 @app.post("/api/ai")
 def describe_product(file: UploadFile = File(...)):
-    """
-    Uses visual cues (like keywords in file names) or default fallback models
-    to generate highly realistic and detailed descriptions for Cebola products.
-    """
-    fn = file.filename.lower()
-    
-    # Smart routing based on filename
-    if "onion" in fn or "cebola" in fn:
-        title = "Cebolas Orgânicas do Alentejo"
-        description = (
-            "Cebolas frescas colhidas manualmente numa quinta familiar no Alentejo. "
-            "Cultivadas de forma 100% biológica, sem pesticidas químicos. Apresentam um sabor intenso, "
-            "ligeiramente adocicado, ideais para refogados tradicionais portugueses e saladas frescas de verão. "
-            "Embaladas cuidadosamente em sacos de rede de 1 kg."
+    """Runs Google Vision OCR on the image, then generates title and description with MiniCPM5."""
+    try:
+        image_bytes = file.file.read()
+        if not image_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded image is empty"
+            )
+        return describe_product_from_image(image_bytes)
+    except AiServiceError as exc:
+        logger.error("AI product description failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc)
         )
-    elif "cheese" in fn or "queijo" in fn:
-        title = "Queijo de Cabra Curado Artesanal"
-        description = (
-            "Queijo artesanal produzido com leite de cabra 100% puro de pastoreio livre. "
-            "Com uma cura mínima de 40 dias, apresenta uma textura firme, casca semi-dura e um sabor "
-            "tradicional marcante e levemente picante. Perfeito para acompanhar um bom vinho regional ou "
-            "para servir numa tábua de petiscos com doce regional."
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Unexpected AI failure: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate product description"
         )
-    elif "jam" in fn or "doce" in fn or "fig" in fn or "figo" in fn:
-        title = "Doce Caseiro de Figo da Época"
-        description = (
-            "Compota tradicional confecionada a fogo lento com figos frescos colhidos no ponto ideal de maturação. "
-            "Preparada segundo uma receita de família antiga, leva apenas figo regional e açúcar de cana biológico, "
-            "preservando a textura rústica e os pedaços da fruta. Excelente para harmonizar com queijo de cabra ou torradas."
-        )
-    elif "tomato" in fn or "tomate" in fn:
-        title = "Tomate Coração de Boi Biológico"
-        description = (
-            "Tomates de variedade antiga Coração de Boi, cultivados ao ar livre e maduros ao sol. "
-            "Sumarentos, carnudos e com baixa acidez, são o expoente máximo do sabor tradicional do tomate de horta. "
-            "Indispensáveis para uma autêntica salada algarvia com orégãos."
-        )
-    elif "bread" in fn or "pao" in fn or "pão" in fn:
-        title = "Pão de Trigo Alentejano em Forno de Lenha"
-        description = (
-            "Pão tradicional de fabrico artesanal, elaborado com farinha de trigo moída em mó de pedra "
-            "e fermentação natural lenta (massa mãe). Cozido em forno de lenha tradicional, o que lhe confere "
-            "uma côdea espessa, estaladiça e um miolo denso e aromático com excelente conservação."
-        )
-    else:
-        title = "Delícia Regional Selecionada"
-        description = (
-            "Produto artesanal premium de origem local controlada, selecionado com base em critérios rigorosos "
-            "de sustentabilidade e frescura. Feito com paixão por produtores locais para trazer o melhor sabor do "
-            "campo diretamente para a sua mesa."
-        )
-        
-    return {
-        "title": title,
-        "description": description
-    }
