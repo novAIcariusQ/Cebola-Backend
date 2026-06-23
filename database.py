@@ -207,6 +207,48 @@ class DatabaseManager:
                 FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE CASCADE,
                 FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE SET NULL
             );
+            """,
+            # 6. Subscription Plans Table
+            """
+            CREATE TABLE IF NOT EXISTS subscription_plans (
+                id VARCHAR(255) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT NOT NULL,
+                price REAL NOT NULL,
+                interval VARCHAR(50) NOT NULL,
+                max_products INTEGER,
+                is_active BOOLEAN NOT NULL,
+                created_at VARCHAR(50) NOT NULL
+            );
+            """,
+            # 7. Subscriptions Table
+            """
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id VARCHAR(255) PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                plan_id VARCHAR(255) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                started_at VARCHAR(50) NOT NULL,
+                expires_at VARCHAR(50),
+                cancelled_at VARCHAR(50),
+                created_at VARCHAR(50) NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE RESTRICT
+            );
+            """,
+            # 8. Shop Ratings Table
+            """
+            CREATE TABLE IF NOT EXISTS shop_ratings (
+                id VARCHAR(255) PRIMARY KEY,
+                shop_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(255) NOT NULL,
+                rating INTEGER NOT NULL,
+                comment TEXT,
+                created_at VARCHAR(50) NOT NULL,
+                FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                UNIQUE(shop_id, user_id)
+            );
             """
         ]
 
@@ -227,34 +269,55 @@ class DatabaseManager:
 
         # Seed data if empty
         try:
+            self.seed_subscription_plans()
             self.seed_data()
         except Exception as e:
             logger.error(f"Error seeding data: {e}")
 
+    def seed_subscription_plans(self):
+        existing = self.execute_one("SELECT COUNT(*) as count FROM subscription_plans")
+        count = existing.get("count", 0) if existing else 0
+        if count > 0:
+            return
+
+        import datetime
+        now = datetime.datetime.utcnow().isoformat() + "Z"
+        plans = [
+            ("plan-free", "Free", "Up to 10 products, basic shop features.", 0.0, "monthly", 10, True, now),
+            ("plan-basic", "Basic", "Up to 50 products and priority support.", 9.99, "monthly", 50, True, now),
+            ("plan-pro", "Pro", "Unlimited products and advanced analytics.", 29.99, "monthly", None, True, now),
+        ]
+        for plan in plans:
+            self.execute_write(
+                "INSERT INTO subscription_plans (id, name, description, price, interval, max_products, is_active, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                plan
+            )
+        logger.info("Default subscription plans seeded.")
+
     def seed_data(self):
-        """Seeds demo data if the users table is empty."""
+        enable_demo = os.environ.get(
+            "CEBOLA_ENABLE_DEMO_DATA",
+            "true" if self.db_type == "sqlite" else "false"
+        ).lower() in ("1", "true", "yes")
+        if not enable_demo:
+            return
+
         user_exists = self.execute_one("SELECT COUNT(*) as count FROM users")
         count = user_exists.get("count", 0) if user_exists else 0
         if count > 0:
             return
 
         logger.info("Database is empty. Seeding demo data...")
-        
-        # 1. Create Demo User (email: merchant@example.com, password: password123)
-        # Hash 'password123' with salt
+
         import hashlib
         import base64
         import datetime
-        
-        salt = b"cebola_fixed_salt_123"
+
+        salt = os.urandom(16)
         db_hash = hashlib.pbkdf2_hmac('sha256', b"password123", salt, 100000)
-        salt_b64 = base64.b64encode(salt).decode('utf-8')
-        hash_b64 = base64.b64encode(db_hash).decode('utf-8')
-        password_hash = f"{salt_b64}:{hash_b64}"
-        
+        password_hash = f"{base64.b64encode(salt).decode('utf-8')}:{base64.b64encode(db_hash).decode('utf-8')}"
         now = datetime.datetime.utcnow().isoformat() + "Z"
-        
-        # Insert user
         self.execute_write(
             "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (%s, %s, %s, %s, %s)",
             ("local-demo-user", "merchant@example.com", "Merchant User", password_hash, now)

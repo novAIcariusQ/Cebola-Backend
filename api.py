@@ -1,14 +1,13 @@
 import os
 import uuid
 import datetime
-import shutil
 import logging
 import random
 from typing import Optional, List
-from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from database import db
 from auth_utils import (
@@ -25,18 +24,23 @@ logger = logging.getLogger("CebolaAPI")
 # Initialize FastAPI App
 app = FastAPI(title="Cebola Backend API")
 
-# Configure CORS for frontend access
+_cors_raw = os.environ.get("CEBOLA_CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+_allow_credentials = "*" not in _cors_origins
+if "*" in _cors_origins:
+    _cors_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Static Files serving for uploaded product images
-# Serves at /api/uploads/ to map perfectly with Vite's /api proxy
 UPLOAD_DIR = "uploads"
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/api/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
@@ -84,6 +88,34 @@ class CustomerOrderPayload(BaseModel):
     shopId: str
     items: List[CustomerOrderItemPayload]
 
+class SubscribePayload(BaseModel):
+    planId: str
+
+class RatingPayload(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    comment: Optional[str] = None
+
+
+def verify_shop_ownership(shop_id: str, user_id: str) -> dict:
+    shop = db.execute_one("SELECT * FROM shops WHERE id = %s", (shop_id,))
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    if shop["owner_id"] != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized")
+    return shop
+
+def get_shop_rating_stats(shop_id: str) -> dict:
+    row = db.execute_one(
+        "SELECT COUNT(*) as count, AVG(rating) as avg_rating FROM shop_ratings WHERE shop_id = %s",
+        (shop_id,)
+    )
+    count = int(row.get("count", 0) or 0) if row else 0
+    avg = row.get("avg_rating") if row else None
+    return {
+        "avgRating": round(float(avg), 2) if avg is not None else None,
+        "ratingCount": count
+    }
+
 # --- RESPONSE FORMATTING HELPERS ---
 
 def format_user(row: dict) -> Optional[dict]:
@@ -96,10 +128,10 @@ def format_user(row: dict) -> Optional[dict]:
         "createdAt": row["created_at"]
     }
 
-def format_shop(row: dict) -> Optional[dict]:
+def format_shop(row: dict, include_rating: bool = False) -> Optional[dict]:
     if not row:
         return None
-    return {
+    result = {
         "id": row["id"],
         "ownerId": row["owner_id"],
         "name": row["name"],
@@ -108,6 +140,9 @@ def format_shop(row: dict) -> Optional[dict]:
         "isActive": bool(row["is_active"]),
         "createdAt": row["created_at"]
     }
+    if include_rating:
+        result.update(get_shop_rating_stats(row["id"]))
+    return result
 
 def format_product(row: dict) -> Optional[dict]:
     if not row:
@@ -159,13 +194,15 @@ def format_order_item(row: dict) -> Optional[dict]:
 def format_customer_shop(row: dict) -> Optional[dict]:
     if not row:
         return None
-    return {
+    result = {
         "id": row["id"],
         "title": row["name"],
         "description": row["description"],
         "logoUrl": row.get("logo_url"),
         "isAvailable": bool(row["is_active"]),
     }
+    result.update(get_shop_rating_stats(row["id"]))
+    return result
 
 def format_customer_product(row: dict, shop_name: str) -> Optional[dict]:
     if not row:
@@ -198,6 +235,55 @@ def format_customer_order_response(order_id: str, guest_order_id: str) -> dict:
 
 def _generate_guest_order_id() -> str:
     return f"{random.randint(10000000, 99999999)}"
+
+def format_subscription_plan(row: dict) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"],
+        "price": float(row["price"]),
+        "interval": row["interval"],
+        "maxProducts": row.get("max_products"),
+        "isActive": bool(row["is_active"]),
+        "createdAt": row["created_at"]
+    }
+
+def format_subscription(row: dict, plan: Optional[dict] = None) -> Optional[dict]:
+    if not row:
+        return None
+    result = {
+        "id": row["id"],
+        "userId": row["user_id"],
+        "planId": row["plan_id"],
+        "status": row["status"],
+        "startedAt": row["started_at"],
+        "expiresAt": row.get("expires_at"),
+        "cancelledAt": row.get("cancelled_at"),
+        "createdAt": row["created_at"]
+    }
+    if plan:
+        result["plan"] = format_subscription_plan(plan)
+    return result
+
+def format_rating(row: dict, user_name: Optional[str] = None) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "shopId": row["shop_id"],
+        "userId": row["user_id"],
+        "userName": user_name,
+        "rating": int(row["rating"]),
+        "comment": row.get("comment"),
+        "createdAt": row["created_at"]
+    }
+
+def _subscription_duration_days(interval: str) -> int:
+    if interval == "yearly":
+        return 365
+    return 30
 
 # --- USER AUTHENTICATION ENDPOINTS ---
 
@@ -334,7 +420,7 @@ def get_shop_by_id(shopId: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shop not found"
         )
-    return format_shop(row)
+    return format_shop(row, include_rating=True)
 
 @app.post("/api/merchant/shop")
 def create_shop(payload: ShopFormValues, current_user: dict = Depends(get_current_user)):
@@ -571,8 +657,10 @@ def get_shop_orders(
     shopId: str,
     page: int = 1,
     limit: int = 20,
-    q: Optional[str] = None
+    q: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
+    verify_shop_ownership(shopId, current_user["id"])
     offset = (page - 1) * limit
     
     if q:
@@ -614,7 +702,12 @@ def get_shop_orders(
     }
 
 @app.get("/api/merchant/shops/{shopId}/orders/{orderId}")
-def get_order_by_id(shopId: str, orderId: str):
+def get_order_by_id(
+    shopId: str,
+    orderId: str,
+    current_user: dict = Depends(get_current_user),
+):
+    verify_shop_ownership(shopId, current_user["id"])
     order_row = db.execute_one("SELECT * FROM orders WHERE id = %s AND shop_id = %s", (orderId, shopId))
     if not order_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -872,23 +965,31 @@ def get_customer_order(orderId: str):
 # --- UPLOAD & ARTIFICIAL INTELLIGENCE ENDPOINTS ---
 
 @app.post("/api/upload")
-def upload_image(file: UploadFile = File(...)):
-    """Receives and stores product or shop logo images in the local uploads/ folder."""
-    # Generate unique filename to avoid collision
-    ext = os.path.splitext(file.filename)[1]
-    # Default to .png if no extension found
-    if not ext:
-        ext = ".png"
+def upload_image(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File type not allowed. Use jpg, jpeg, png, webp, or gif.",
+        )
+
+    content = file.file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File exceeds maximum size of 5 MB",
+        )
+
     unique_filename = f"{uuid.uuid4().hex[:16]}{ext}"
     dest_path = os.path.join(UPLOAD_DIR, unique_filename)
-    
+
     try:
         with open(dest_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Public URL served at /api/uploads/
-        public_url = f"/api/uploads/{unique_filename}"
-        return {"url": public_url}
+            buffer.write(content)
+        return {"url": f"/api/uploads/{unique_filename}"}
     except Exception as e:
         logger.error(f"Failed to save uploaded file: {e}")
         raise HTTPException(
@@ -897,14 +998,11 @@ def upload_image(file: UploadFile = File(...)):
         )
 
 @app.post("/api/ai")
-def describe_product(file: UploadFile = File(...)):
-    """
-    Uses visual cues (like keywords in file names) or default fallback models
-    to generate highly realistic and detailed descriptions for Cebola products.
-    """
-    fn = file.filename.lower()
-    
-    # Smart routing based on filename
+def describe_product(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    fn = (file.filename or "").lower()
     if "onion" in fn or "cebola" in fn:
         title = "Cebolas Orgânicas do Alentejo"
         description = (
@@ -953,4 +1051,201 @@ def describe_product(file: UploadFile = File(...)):
     return {
         "title": title,
         "description": description
+    }
+
+
+# --- SUBSCRIPTION ENDPOINTS ---
+
+@app.get("/api/subscription/plans")
+def list_subscription_plans():
+    rows = db.execute_query(
+        "SELECT * FROM subscription_plans WHERE is_active = TRUE ORDER BY price ASC"
+    )
+    return [format_subscription_plan(row) for row in rows]
+
+@app.get("/api/subscription/me")
+def get_my_subscription(current_user: dict = Depends(get_current_user)):
+    sub = db.execute_one(
+        "SELECT * FROM subscriptions WHERE user_id = %s AND status = 'active' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (current_user["id"],)
+    )
+    if not sub:
+        return None
+    plan = db.execute_one("SELECT * FROM subscription_plans WHERE id = %s", (sub["plan_id"],))
+    return format_subscription(sub, plan)
+
+@app.post("/api/subscription/subscribe")
+def subscribe(payload: SubscribePayload, current_user: dict = Depends(get_current_user)):
+    plan = db.execute_one(
+        "SELECT * FROM subscription_plans WHERE id = %s AND is_active = TRUE",
+        (payload.planId,)
+    )
+    if not plan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription plan not found")
+
+    now = datetime.datetime.utcnow()
+    now_iso = now.isoformat() + "Z"
+    expires = now + datetime.timedelta(days=_subscription_duration_days(plan["interval"]))
+    expires_iso = expires.isoformat() + "Z"
+
+    existing = db.execute_one(
+        "SELECT * FROM subscriptions WHERE user_id = %s AND status = 'active'",
+        (current_user["id"],)
+    )
+    if existing:
+        db.execute_write(
+            "UPDATE subscriptions SET plan_id = %s, started_at = %s, expires_at = %s, cancelled_at = NULL "
+            "WHERE id = %s",
+            (payload.planId, now_iso, expires_iso, existing["id"])
+        )
+        sub_id = existing["id"]
+    else:
+        sub_id = f"sub-{uuid.uuid4().hex[:12]}"
+        db.execute_write(
+            "INSERT INTO subscriptions (id, user_id, plan_id, status, started_at, expires_at, cancelled_at, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (sub_id, current_user["id"], payload.planId, "active", now_iso, expires_iso, None, now_iso)
+        )
+
+    sub = db.execute_one("SELECT * FROM subscriptions WHERE id = %s", (sub_id,))
+    return format_subscription(sub, plan)
+
+@app.post("/api/subscription/cancel")
+def cancel_subscription(current_user: dict = Depends(get_current_user)):
+    sub = db.execute_one(
+        "SELECT * FROM subscriptions WHERE user_id = %s AND status = 'active'",
+        (current_user["id"],)
+    )
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active subscription found")
+
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+    db.execute_write(
+        "UPDATE subscriptions SET status = 'cancelled', cancelled_at = %s WHERE id = %s",
+        (now_iso, sub["id"])
+    )
+    updated = db.execute_one("SELECT * FROM subscriptions WHERE id = %s", (sub["id"],))
+    plan = db.execute_one("SELECT * FROM subscription_plans WHERE id = %s", (updated["plan_id"],))
+    return format_subscription(updated, plan)
+
+
+# --- SHOP RATING ENDPOINTS ---
+
+@app.get("/api/shops/{shopId}/ratings")
+def list_shop_ratings(shopId: str, page: int = 1, limit: int = 20):
+    shop = db.execute_one("SELECT id FROM shops WHERE id = %s AND is_active = TRUE", (shopId,))
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    offset = (page - 1) * limit
+    count_row = db.execute_one(
+        "SELECT COUNT(*) as count FROM shop_ratings WHERE shop_id = %s",
+        (shopId,)
+    )
+    total = count_row.get("count", 0) if count_row else 0
+
+    rows = db.execute_query(
+        "SELECT r.*, u.name as user_name FROM shop_ratings r "
+        "JOIN users u ON r.user_id = u.id "
+        "WHERE r.shop_id = %s ORDER BY r.created_at DESC LIMIT %s OFFSET %s",
+        (shopId, limit, offset)
+    )
+    stats = get_shop_rating_stats(shopId)
+    return {
+        "items": [format_rating(row, row.get("user_name")) for row in rows],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "avgRating": stats["avgRating"],
+        "ratingCount": stats["ratingCount"],
+    }
+
+@app.post("/api/shops/{shopId}/ratings")
+def submit_shop_rating(
+    shopId: str,
+    payload: RatingPayload,
+    current_user: dict = Depends(get_current_user),
+):
+    shop = db.execute_one("SELECT * FROM shops WHERE id = %s AND is_active = TRUE", (shopId,))
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    if shop["owner_id"] == current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot rate your own shop"
+        )
+
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+    existing = db.execute_one(
+        "SELECT id FROM shop_ratings WHERE shop_id = %s AND user_id = %s",
+        (shopId, current_user["id"])
+    )
+    if existing:
+        db.execute_write(
+            "UPDATE shop_ratings SET rating = %s, comment = %s, created_at = %s WHERE id = %s",
+            (payload.rating, payload.comment, now_iso, existing["id"])
+        )
+        rating_id = existing["id"]
+    else:
+        rating_id = f"rating-{uuid.uuid4().hex[:12]}"
+        db.execute_write(
+            "INSERT INTO shop_ratings (id, shop_id, user_id, rating, comment, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (rating_id, shopId, current_user["id"], payload.rating, payload.comment, now_iso)
+        )
+
+    row = db.execute_one("SELECT * FROM shop_ratings WHERE id = %s", (rating_id,))
+    return format_rating(row, current_user["name"])
+
+@app.delete("/api/shops/{shopId}/ratings/{ratingId}")
+def delete_shop_rating(
+    shopId: str,
+    ratingId: str,
+    current_user: dict = Depends(get_current_user),
+):
+    rating = db.execute_one(
+        "SELECT * FROM shop_ratings WHERE id = %s AND shop_id = %s",
+        (ratingId, shopId)
+    )
+    if not rating:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rating not found")
+
+    shop = db.execute_one("SELECT owner_id FROM shops WHERE id = %s", (shopId,))
+    is_owner = shop and shop["owner_id"] == current_user["id"]
+    is_rater = rating["user_id"] == current_user["id"]
+    if not is_owner and not is_rater:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized")
+
+    db.execute_write("DELETE FROM shop_ratings WHERE id = %s", (ratingId,))
+    return {"success": True}
+
+@app.get("/api/merchant/shops/{shopId}/ratings")
+def list_merchant_shop_ratings(
+    shopId: str,
+    page: int = 1,
+    limit: int = 20,
+    current_user: dict = Depends(get_current_user),
+):
+    verify_shop_ownership(shopId, current_user["id"])
+    offset = (page - 1) * limit
+    count_row = db.execute_one(
+        "SELECT COUNT(*) as count FROM shop_ratings WHERE shop_id = %s",
+        (shopId,)
+    )
+    total = count_row.get("count", 0) if count_row else 0
+    rows = db.execute_query(
+        "SELECT r.*, u.name as user_name FROM shop_ratings r "
+        "JOIN users u ON r.user_id = u.id "
+        "WHERE r.shop_id = %s ORDER BY r.created_at DESC LIMIT %s OFFSET %s",
+        (shopId, limit, offset)
+    )
+    stats = get_shop_rating_stats(shopId)
+    return {
+        "items": [format_rating(row, row.get("user_name")) for row in rows],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "avgRating": stats["avgRating"],
+        "ratingCount": stats["ratingCount"],
     }
