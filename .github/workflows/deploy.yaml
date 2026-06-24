@@ -41,7 +41,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          source: api.py,database.py,auth_utils.py,dbInfo.py,requirements.txt
+          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,requirements.txt
           target: ${{ steps.target.outputs.remote_dir }}
           overwrite: true
 

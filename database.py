@@ -63,7 +63,7 @@ class DatabaseManager:
             user=db_config.username,
             password=db_config.password,
             host=db_config.ip,
-            port="5432"
+            port=getattr(db_config, "port", "5432"),
         )
 
     def _get_sqlite_connection(self):

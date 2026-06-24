@@ -3,6 +3,7 @@ import uuid
 import datetime
 import shutil
 import logging
+import random
 from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +17,7 @@ from auth_utils import (
     create_access_token,
     get_current_user
 )
+from ai_utils import AiServiceError, describe_product_from_image
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -75,6 +77,13 @@ class ProductFormValues(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
+class CustomerOrderItemPayload(BaseModel):
+    productId: str
+    quantity: int
+
+class CustomerOrderPayload(BaseModel):
+    shopId: str
+    items: List[CustomerOrderItemPayload]
 
 # --- RESPONSE FORMATTING HELPERS ---
 
@@ -148,6 +157,48 @@ def format_order_item(row: dict) -> Optional[dict]:
         "priceAtTime": float(row["price_at_time"])
     }
 
+def format_customer_shop(row: dict) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "title": row["name"],
+        "description": row["description"],
+        "logoUrl": row.get("logo_url"),
+        "isAvailable": bool(row["is_active"]),
+    }
+
+def format_customer_product(row: dict, shop_name: str) -> Optional[dict]:
+    if not row:
+        return None
+    quantity = int(row["quantity"])
+    is_available = bool(row["is_available"]) and quantity > 0
+    return {
+        "id": row["id"],
+        "shopId": row["shop_id"],
+        "shopTitle": shop_name,
+        "title": row["title"],
+        "description": row["description"],
+        "price": float(row["price"]),
+        "quantity": quantity,
+        "photoUrl": row.get("photo_url"),
+        "isAvailable": is_available,
+    }
+
+def format_customer_order_response(order_id: str, guest_order_id: str) -> dict:
+    payment_template = os.getenv(
+        "PAYMENT_URL_TEMPLATE",
+        "https://checkout.stripe.com/c/pay/{order_id}",
+    )
+    payment_url = payment_template.format(order_id=order_id, guest_order_id=guest_order_id)
+    return {
+        "id": order_id,
+        "guestOrderId": guest_order_id,
+        "paymentUrl": payment_url,
+    }
+
+def _generate_guest_order_id() -> str:
+    return f"{random.randint(10000000, 99999999)}"
 
 # --- USER AUTHENTICATION ENDPOINTS ---
 
@@ -176,7 +227,7 @@ def register(payload: RegisterPayload):
     token = create_access_token({"sub": user_id})
     
     return {
-        "token": f"Bearer {token}",
+        "token": token,
         "user": format_user(user)
     }
 
@@ -191,7 +242,7 @@ def login(payload: LoginPayload):
     
     token = create_access_token({"sub": user["id"]})
     return {
-        "token": f"Bearer {token}",
+        "token": token,
         "user": format_user(user)
     }
 
@@ -225,27 +276,39 @@ def change_password(payload: ChangePasswordPayload, current_user: dict = Depends
 # --- SHOP MANAGEMENT ENDPOINTS ---
 
 @app.get("/api/merchant/shops")
-def get_shops(page: int = 1, limit: int = 10, q: Optional[str] = None):
+def get_shops(
+    page: int = 1,
+    limit: int = 10,
+    q: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     offset = (page - 1) * limit
+    owner_id = current_user["id"]
     if q:
         search_pattern = f"%{q.lower()}%"
         count_row = db.execute_one(
-            "SELECT COUNT(*) as count FROM shops WHERE LOWER(name) LIKE %s OR LOWER(description) LIKE %s",
-            (search_pattern, search_pattern)
+            "SELECT COUNT(*) as count FROM shops WHERE owner_id = %s "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s)",
+            (owner_id, search_pattern, search_pattern),
         )
         total = count_row.get("count", 0) if count_row else 0
         
         rows = db.execute_query(
-            "SELECT * FROM shops WHERE LOWER(name) LIKE %s OR LOWER(description) LIKE %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
-            (search_pattern, search_pattern, limit, offset)
+            "SELECT * FROM shops WHERE owner_id = %s "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s) "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (owner_id, search_pattern, search_pattern, limit, offset),
         )
     else:
-        count_row = db.execute_one("SELECT COUNT(*) as count FROM shops")
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM shops WHERE owner_id = %s",
+            (owner_id,),
+        )
         total = count_row.get("count", 0) if count_row else 0
         
         rows = db.execute_query(
-            "SELECT * FROM shops ORDER BY created_at DESC LIMIT %s OFFSET %s",
-            (limit, offset)
+            "SELECT * FROM shops WHERE owner_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (owner_id, limit, offset),
         )
         
     return {
@@ -589,6 +652,224 @@ def update_order_status(
     return format_order(refreshed_order, items)
 
 
+# --- CUSTOMER STOREFRONT ENDPOINTS (PUBLIC) ---
+
+@app.get("/api/shops")
+def list_public_shops(page: int = 1, limit: int = 10, q: Optional[str] = None):
+    offset = (page - 1) * limit
+    if q:
+        search_pattern = f"%{q.lower()}%"
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM shops WHERE is_active = TRUE "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s)",
+            (search_pattern, search_pattern),
+        )
+        rows = db.execute_query(
+            "SELECT * FROM shops WHERE is_active = TRUE "
+            "AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s) "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (search_pattern, search_pattern, limit, offset),
+        )
+    else:
+        count_row = db.execute_one("SELECT COUNT(*) as count FROM shops WHERE is_active = TRUE")
+        rows = db.execute_query(
+            "SELECT * FROM shops WHERE is_active = TRUE ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (limit, offset),
+        )
+
+    total = count_row.get("count", 0) if count_row else 0
+    return {
+        "items": [format_customer_shop(row) for row in rows],
+        "total": total,
+    }
+
+
+@app.get("/api/shops/{shopId}")
+def get_public_shop(shopId: str):
+    row = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (shopId,),
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+    return format_customer_shop(row)
+
+
+@app.get("/api/shops/{shopId}/products")
+def list_public_shop_products(
+    shopId: str,
+    page: int = 1,
+    limit: int = 100,
+    q: Optional[str] = None,
+):
+    shop = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (shopId,),
+    )
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    offset = (page - 1) * limit
+    if q:
+        search_pattern = f"%{q.lower()}%"
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0 "
+            "AND (LOWER(title) LIKE %s OR LOWER(description) LIKE %s)",
+            (shopId, search_pattern, search_pattern),
+        )
+        rows = db.execute_query(
+            "SELECT * FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0 "
+            "AND (LOWER(title) LIKE %s OR LOWER(description) LIKE %s) "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (shopId, search_pattern, search_pattern, limit, offset),
+        )
+    else:
+        count_row = db.execute_one(
+            "SELECT COUNT(*) as count FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0",
+            (shopId,),
+        )
+        rows = db.execute_query(
+            "SELECT * FROM products WHERE shop_id = %s AND is_available = TRUE AND quantity > 0 "
+            "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (shopId, limit, offset),
+        )
+
+    total = count_row.get("count", 0) if count_row else 0
+    shop_name = shop["name"]
+    return {
+        "items": [format_customer_product(row, shop_name) for row in rows],
+        "total": total,
+    }
+
+
+@app.get("/api/shops/{shopId}/products/{productId}")
+def get_public_product(shopId: str, productId: str):
+    shop = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (shopId,),
+    )
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    row = db.execute_one(
+        "SELECT * FROM products WHERE id = %s AND shop_id = %s AND is_available = TRUE AND quantity > 0",
+        (productId, shopId),
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    return format_customer_product(row, shop["name"])
+
+
+@app.post("/api/orders")
+def create_customer_order(payload: CustomerOrderPayload):
+    if not payload.items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Order must contain at least one item",
+        )
+
+    shop = db.execute_one(
+        "SELECT * FROM shops WHERE id = %s AND is_active = TRUE",
+        (payload.shopId,),
+    )
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    line_items = []
+    total_amount = 0.0
+    total_quantity = 0
+
+    for item in payload.items:
+        if item.quantity < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Each item quantity must be at least 1",
+            )
+
+        product = db.execute_one(
+            "SELECT * FROM products WHERE id = %s AND shop_id = %s",
+            (item.productId, payload.shopId),
+        )
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Product not found: {item.productId}",
+            )
+        if not product["is_available"] or int(product["quantity"]) < item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient stock for product: {product['title']}",
+            )
+
+        line_total = float(product["price"]) * item.quantity
+        total_amount += line_total
+        total_quantity += item.quantity
+        line_items.append((product, item.quantity, line_total))
+
+    order_id = str(uuid.uuid4())
+    guest_order_id = _generate_guest_order_id()
+    created_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    db.execute_write(
+        "INSERT INTO orders (id, shop_id, user_id, guest_order_id, customer_name, customer_email, "
+        "customer_phone, total_amount, total_quantity, status, qr_code_data, created_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            order_id,
+            payload.shopId,
+            None,
+            guest_order_id,
+            None,
+            None,
+            None,
+            total_amount,
+            total_quantity,
+            "pending",
+            f"order:{order_id}",
+            created_at,
+        ),
+    )
+
+    for product, quantity, line_total in line_items:
+        item_id = f"item-{uuid.uuid4().hex[:8]}"
+        price_at_time = float(product["price"])
+        db.execute_write(
+            "INSERT INTO order_items (id, order_id, product_id, product_title, product_logo, quantity, price_at_time) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (
+                item_id,
+                order_id,
+                product["id"],
+                product["title"],
+                product.get("photo_url"),
+                quantity,
+                price_at_time,
+            ),
+        )
+
+        new_quantity = int(product["quantity"]) - quantity
+        is_available = new_quantity > 0 and bool(product["is_available"])
+        db.execute_write(
+            "UPDATE products SET quantity = %s, is_available = %s WHERE id = %s",
+            (new_quantity, is_available, product["id"]),
+        )
+
+    return format_customer_order_response(order_id, guest_order_id)
+
+
+@app.get("/api/orders/{orderId}")
+def get_customer_order(orderId: str):
+    order_row = db.execute_one(
+        "SELECT * FROM orders WHERE id = %s OR guest_order_id = %s",
+        (orderId, orderId),
+    )
+    if not order_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    guest_order_id = order_row.get("guest_order_id") or ""
+    return format_customer_order_response(order_row["id"], guest_order_id)
+
+
 # --- UPLOAD & ARTIFICIAL INTELLIGENCE ENDPOINTS ---
 
 @app.post("/api/upload")
@@ -618,59 +899,26 @@ def upload_image(file: UploadFile = File(...)):
 
 @app.post("/api/ai")
 def describe_product(file: UploadFile = File(...)):
-    """
-    Uses visual cues (like keywords in file names) or default fallback models
-    to generate highly realistic and detailed descriptions for Cebola products.
-    """
-    fn = file.filename.lower()
-    
-    # Smart routing based on filename
-    if "onion" in fn or "cebola" in fn:
-        title = "Cebolas Orgânicas do Alentejo"
-        description = (
-            "Cebolas frescas colhidas manualmente numa quinta familiar no Alentejo. "
-            "Cultivadas de forma 100% biológica, sem pesticidas químicos. Apresentam um sabor intenso, "
-            "ligeiramente adocicado, ideais para refogados tradicionais portugueses e saladas frescas de verão. "
-            "Embaladas cuidadosamente em sacos de rede de 1 kg."
+    """Runs Google Vision OCR on the image, then generates title and description with MiniCPM5."""
+    try:
+        image_bytes = file.file.read()
+        if not image_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded image is empty"
+            )
+        return describe_product_from_image(image_bytes)
+    except AiServiceError as exc:
+        logger.error("AI product description failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc)
         )
-    elif "cheese" in fn or "queijo" in fn:
-        title = "Queijo de Cabra Curado Artesanal"
-        description = (
-            "Queijo artesanal produzido com leite de cabra 100% puro de pastoreio livre. "
-            "Com uma cura mínima de 40 dias, apresenta uma textura firme, casca semi-dura e um sabor "
-            "tradicional marcante e levemente picante. Perfeito para acompanhar um bom vinho regional ou "
-            "para servir numa tábua de petiscos com doce regional."
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Unexpected AI failure: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate product description"
         )
-    elif "jam" in fn or "doce" in fn or "fig" in fn or "figo" in fn:
-        title = "Doce Caseiro de Figo da Época"
-        description = (
-            "Compota tradicional confecionada a fogo lento com figos frescos colhidos no ponto ideal de maturação. "
-            "Preparada segundo uma receita de família antiga, leva apenas figo regional e açúcar de cana biológico, "
-            "preservando a textura rústica e os pedaços da fruta. Excelente para harmonizar com queijo de cabra ou torradas."
-        )
-    elif "tomato" in fn or "tomate" in fn:
-        title = "Tomate Coração de Boi Biológico"
-        description = (
-            "Tomates de variedade antiga Coração de Boi, cultivados ao ar livre e maduros ao sol. "
-            "Sumarentos, carnudos e com baixa acidez, são o expoente máximo do sabor tradicional do tomate de horta. "
-            "Indispensáveis para uma autêntica salada algarvia com orégãos."
-        )
-    elif "bread" in fn or "pao" in fn or "pão" in fn:
-        title = "Pão de Trigo Alentejano em Forno de Lenha"
-        description = (
-            "Pão tradicional de fabrico artesanal, elaborado com farinha de trigo moída em mó de pedra "
-            "e fermentação natural lenta (massa mãe). Cozido em forno de lenha tradicional, o que lhe confere "
-            "uma côdea espessa, estaladiça e um miolo denso e aromático com excelente conservação."
-        )
-    else:
-        title = "Delícia Regional Selecionada"
-        description = (
-            "Produto artesanal premium de origem local controlada, selecionado com base em critérios rigorosos "
-            "de sustentabilidade e frescura. Feito com paixão por produtores locais para trazer o melhor sabor do "
-            "campo diretamente para a sua mesa."
-        )
-        
-    return {
-        "title": title,
-        "description": description
-    }

@@ -1,2 +1,22 @@
-# Backend for the thing
-Read instructions in [frontend README.md](https://github.com/novAIcariusQ/Cebola-Frontend)
+# Cebola Backend API
+
+FastAPI backend with PostgreSQL (Docker) or SQLite fallback.
+
+## Run with Docker (PostgreSQL)
+
+```bash
+docker compose up --build
+```
+
+API: http://localhost:3001
+
+## Run locally
+
+```bash
+pip install -r requirements.txt
+uvicorn api:app --reload --port 3001
+```
+
+Set `POSTGRES_HOST`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` to use PostgreSQL; otherwise SQLite (`cebola.db`) is used.
+
+Demo merchant login after seed: `merchant@example.com` / `password123`
