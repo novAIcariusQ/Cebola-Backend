@@ -16,6 +16,7 @@ from auth_utils import (
     create_access_token,
     get_current_user
 )
+from ai_utils import AiServiceError, describe_product_from_image
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -1040,12 +1041,13 @@ def describe_product(
             "e fermentação natural lenta (massa mãe). Cozido em forno de lenha tradicional, o que lhe confere "
             "uma côdea espessa, estaladiça e um miolo denso e aromático com excelente conservação."
         )
-    else:
-        title = "Delícia Regional Selecionada"
-        description = (
-            "Produto artesanal premium de origem local controlada, selecionado com base em critérios rigorosos "
-            "de sustentabilidade e frescura. Feito com paixão por produtores locais para trazer o melhor sabor do "
-            "campo diretamente para a sua mesa."
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Unexpected AI failure: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate product description"
         )
         
     return {
