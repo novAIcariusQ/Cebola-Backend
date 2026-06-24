@@ -11,6 +11,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Environment
+.env
+.env.local
+
 # Databases
 cebola.db
 *.db
