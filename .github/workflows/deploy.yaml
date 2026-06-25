@@ -41,7 +41,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,requirements.txt,.env.example
+          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,stripe_utils.py,order_fulfillment.py,requirements.txt,.env.example
           target: ${{ steps.target.outputs.remote_dir }}
           overwrite: true
 
@@ -52,12 +52,23 @@ jobs:
           MINICPM5_API_BASE: ${{ secrets.MINICPM5_API_BASE }}
           MINICPM5_MODEL: ${{ secrets.MINICPM5_MODEL }}
           MINICPM5_API_KEY: ${{ secrets.MINICPM5_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_CURRENCY: ${{ secrets.STRIPE_CURRENCY }}
+          STRIPE_SUCCESS_URL: ${{ secrets.STRIPE_SUCCESS_URL }}
+          STRIPE_CANCEL_URL: ${{ secrets.STRIPE_CANCEL_URL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
+          SMTP_USE_TLS: ${{ secrets.SMTP_USE_TLS }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: GOOGLE_VISION_API_KEY,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
+          envs: GOOGLE_VISION_API_KEY,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY,STRIPE_SECRET_KEY,STRIPE_WEBHOOK_SECRET,STRIPE_CURRENCY,STRIPE_SUCCESS_URL,STRIPE_CANCEL_URL,SMTP_HOST,SMTP_PORT,SMTP_USERNAME,SMTP_PASSWORD,SMTP_FROM_EMAIL,SMTP_USE_TLS
           script: |
             set -e
             cd ${{ steps.target.outputs.remote_dir }}
@@ -86,8 +97,38 @@ jobs:
             set_env .env.local MINICPM5_API_BASE "${MINICPM5_API_BASE_VALUE}"
             set_env .env.local MINICPM5_MODEL "${MINICPM5_MODEL_VALUE}"
             set_env .env.local MINICPM5_API_KEY "${MINICPM5_API_KEY_VALUE}"
+            if [ -n "${STRIPE_SECRET_KEY}" ]; then
+              set_env .env.local STRIPE_SECRET_KEY "${STRIPE_SECRET_KEY}"
+            fi
+            if [ -n "${STRIPE_WEBHOOK_SECRET}" ]; then
+              set_env .env.local STRIPE_WEBHOOK_SECRET "${STRIPE_WEBHOOK_SECRET}"
+            fi
+            STRIPE_CURRENCY_VALUE="${STRIPE_CURRENCY:-eur}"
+            set_env .env.local STRIPE_CURRENCY "${STRIPE_CURRENCY_VALUE}"
+            if [ -n "${STRIPE_SUCCESS_URL}" ]; then
+              set_env .env.local STRIPE_SUCCESS_URL "${STRIPE_SUCCESS_URL}"
+            fi
+            if [ -n "${STRIPE_CANCEL_URL}" ]; then
+              set_env .env.local STRIPE_CANCEL_URL "${STRIPE_CANCEL_URL}"
+            fi
+            if [ -n "${SMTP_HOST}" ]; then
+              set_env .env.local SMTP_HOST "${SMTP_HOST}"
+            fi
+            SMTP_PORT_VALUE="${SMTP_PORT:-587}"
+            set_env .env.local SMTP_PORT "${SMTP_PORT_VALUE}"
+            if [ -n "${SMTP_USERNAME}" ]; then
+              set_env .env.local SMTP_USERNAME "${SMTP_USERNAME}"
+            fi
+            if [ -n "${SMTP_PASSWORD}" ]; then
+              set_env .env.local SMTP_PASSWORD "${SMTP_PASSWORD}"
+            fi
+            if [ -n "${SMTP_FROM_EMAIL}" ]; then
+              set_env .env.local SMTP_FROM_EMAIL "${SMTP_FROM_EMAIL}"
+            fi
+            SMTP_USE_TLS_VALUE="${SMTP_USE_TLS:-true}"
+            set_env .env.local SMTP_USE_TLS "${SMTP_USE_TLS_VALUE}"
             chmod 600 .env.local
-            python3 -m py_compile api.py ai_utils.py
+            python3 -m py_compile api.py ai_utils.py stripe_utils.py order_fulfillment.py
             systemctl restart ${{ steps.target.outputs.service }}
             systemctl is-active --quiet ${{ steps.target.outputs.service }}
             sleep 3

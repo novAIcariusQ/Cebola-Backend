@@ -3,6 +3,7 @@ import os
 import base64
 import jwt
 import logging
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from fastapi import Header, HTTPException, status
 from database import db
@@ -69,7 +70,7 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
         )
 
     user = db.execute_one(
-        "SELECT id, email, name, created_at FROM users WHERE id = %s",
+        "SELECT id, email, name, order_ids, created_at FROM users WHERE id = %s",
         (payload["sub"],)
     )
     if not user:
@@ -78,3 +79,16 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
             detail="User not found"
         )
     return user
+
+async def get_optional_user(authorization: str = Header(None)) -> Optional[dict]:
+    if not authorization:
+        return None
+
+    payload = verify_token(authorization)
+    if not payload or "sub" not in payload:
+        return None
+
+    return db.execute_one(
+        "SELECT id, email, name, order_ids, created_at FROM users WHERE id = %s",
+        (payload["sub"],)
+    )

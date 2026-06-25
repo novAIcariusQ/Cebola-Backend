@@ -32,6 +32,11 @@ services:
       MINICPM5_API_BASE: ${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}
       MINICPM5_MODEL: ${MINICPM5_MODEL:-MiniCPM5}
       MINICPM5_API_KEY: ${MINICPM5_API_KEY:-not-needed}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_CURRENCY: ${STRIPE_CURRENCY:-eur}
+      STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-http://localhost:5173/checkout/success?session_id={CHECKOUT_SESSION_ID}}
+      STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-http://localhost:5173/basket}
     volumes:
       - api_uploads:/app/uploads
     depends_on:

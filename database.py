@@ -144,6 +144,7 @@ class DatabaseManager:
                 email VARCHAR(255) UNIQUE NOT NULL,
                 name VARCHAR(255) NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
+                order_ids TEXT NOT NULL DEFAULT '[]',
                 created_at VARCHAR(50) NOT NULL
             );
             """,
@@ -189,6 +190,8 @@ class DatabaseManager:
                 total_quantity INTEGER NOT NULL,
                 status VARCHAR(50) NOT NULL,
                 qr_code_data TEXT,
+                stripe_session_id VARCHAR(255),
+                stripe_payment_intent_id VARCHAR(255),
                 created_at VARCHAR(50) NOT NULL,
                 FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
@@ -267,12 +270,40 @@ class DatabaseManager:
         finally:
             conn.close()
 
+        self._migrate_schema()
+
         # Seed data if empty
         try:
             self.seed_subscription_plans()
             self.seed_data()
         except Exception as e:
             logger.error(f"Error seeding data: {e}")
+
+    def _column_exists(self, table: str, column: str) -> bool:
+        if self.db_type == "sqlite":
+            rows = self.execute_query(f"PRAGMA table_info({table})")
+            return any(row.get("name") == column for row in rows)
+        row = self.execute_one(
+            "SELECT 1 AS found FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s",
+            (table, column),
+        )
+        return row is not None
+
+    def _migrate_schema(self):
+        migrations = [
+            ("users", "order_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("orders", "stripe_session_id", "VARCHAR(255)"),
+            ("orders", "stripe_payment_intent_id", "VARCHAR(255)"),
+        ]
+        for table, column, definition in migrations:
+            if self._column_exists(table, column):
+                continue
+            try:
+                self.execute_write(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                logger.info("Added column %s.%s", table, column)
+            except Exception as exc:
+                logger.error("Failed to add column %s.%s: %s", table, column, exc)
 
     def seed_subscription_plans(self):
         existing = self.execute_one("SELECT COUNT(*) as count FROM subscription_plans")
@@ -319,8 +350,8 @@ class DatabaseManager:
         password_hash = f"{base64.b64encode(salt).decode('utf-8')}:{base64.b64encode(db_hash).decode('utf-8')}"
         now = datetime.datetime.utcnow().isoformat() + "Z"
         self.execute_write(
-            "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (%s, %s, %s, %s, %s)",
-            ("local-demo-user", "merchant@example.com", "Merchant User", password_hash, now)
+            "INSERT INTO users (id, email, name, password_hash, order_ids, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            ("local-demo-user", "merchant@example.com", "Merchant User", password_hash, "[]", now)
         )
         
         # 2. Insert Shop
