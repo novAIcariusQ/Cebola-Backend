@@ -7,7 +7,9 @@ from typing import Optional, List
 
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+_env_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_env_dir, ".env"))
+load_dotenv(os.path.join(_env_dir, ".env.local"), override=True)
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.staticfiles import StaticFiles

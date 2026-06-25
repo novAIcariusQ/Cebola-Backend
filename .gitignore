@@ -24,8 +24,8 @@ cebola.db
 uploads/*
 !uploads/.gitkeep
 
-# Local environment
-.env
+# Local overrides (not overwritten by deploy)
+.env.local
 
 # IDE and OS files
 .vscode/
