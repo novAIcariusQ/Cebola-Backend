@@ -3,10 +3,23 @@ import json
 import logging
 import os
 import re
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
 logger = logging.getLogger("CebolaAPI")
+
+DEFAULT_LLM_ENDPOINTS = (
+    "http://127.0.0.1:8000/v1",
+    "http://127.0.0.1:11434/v1",
+    "http://127.0.0.1:8080/v1",
+)
+DEFAULT_LLM_MODELS = (
+    "MiniCPM5",
+    "minicpm5",
+    "openbmb/MiniCPM5-1B-Instruct",
+    "minicpm",
+)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -16,9 +29,9 @@ def _env(name: str, default: str = "") -> str:
 def _ai_settings() -> dict:
     return {
         "google_vision_api_key": _env("GOOGLE_VISION_API_KEY"),
-        "minicpm5_api_base": _env("MINICPM5_API_BASE", "http://127.0.0.1:8000/v1"),
+        "minicpm5_api_base": _env("MINICPM5_API_BASE"),
         "minicpm5_api_key": _env("MINICPM5_API_KEY", "not-needed"),
-        "minicpm5_model": _env("MINICPM5_MODEL", "MiniCPM5"),
+        "minicpm5_model": _env("MINICPM5_MODEL"),
     }
 
 
@@ -116,8 +129,62 @@ def _extract_text_via_client_library(image_bytes: bytes) -> str:
     return (annotations[0].description or "").strip()
 
 
-def generate_product_copy(ocr_text: str) -> dict:
+def _normalize_ocr_lines(ocr_text: str) -> List[str]:
+    lines = [line.strip() for line in ocr_text.splitlines() if line.strip()]
+    if lines:
+        return lines
+
+    compact = re.sub(r"\s+", " ", ocr_text).strip()
+    return [compact] if compact else []
+
+
+def _generate_from_ocr_fallback(ocr_text: str) -> dict:
+    lines = _normalize_ocr_lines(ocr_text)
+    if not lines:
+        return {
+            "title": "Produto Artesanal Regional",
+            "description": (
+                "Produto selecionado de origem local, ideal para quem valoriza qualidade e frescura. "
+                "Perfeito para o dia a dia ou para oferecer em ocasiões especiais."
+            ),
+        }
+
+    title_source = lines[0]
+    title = title_source[:80].strip(" ,.;:-")
+    body_lines = lines[1:] or lines
+    description = " ".join(body_lines)
+    description = re.sub(r"\s+", " ", description).strip()
+
+    if len(description) < 40:
+        description = (
+            f"{title_source}. Produto de qualidade, selecionado para o mercado Cebola. "
+            "Ideal para consumo fresco e para quem procura sabores autênticos da região."
+        )
+
+    if len(description) > 500:
+        description = description[:497].rstrip() + "..."
+
+    return {"title": title, "description": description}
+
+
+def _llm_candidates() -> List[Tuple[str, str]]:
     settings = _ai_settings()
+    candidates: List[Tuple[str, str]] = []
+
+    if settings["minicpm5_api_base"]:
+        model = settings["minicpm5_model"] or DEFAULT_LLM_MODELS[0]
+        candidates.append((settings["minicpm5_api_base"], model))
+
+    for base in DEFAULT_LLM_ENDPOINTS:
+        for model in DEFAULT_LLM_MODELS:
+            pair = (base, model)
+            if pair not in candidates:
+                candidates.append(pair)
+
+    return candidates
+
+
+def _request_minicpm_copy(base_url: str, model: str, ocr_text: str, api_key: str) -> dict:
     prompt = (
         "You help Portuguese marketplace merchants create product listings.\n"
         "Use the text extracted from a product photo to write a title and description.\n\n"
@@ -128,32 +195,29 @@ def generate_product_copy(ocr_text: str) -> dict:
         "Write a description of 2-4 sentences suitable for e-commerce."
     )
 
-    base_url = settings["minicpm5_api_base"].rstrip("/")
-    url = f"{base_url}/chat/completions"
+    url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings['minicpm5_api_key']}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": settings["minicpm5_model"],
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.4,
         "max_tokens": 512,
     }
 
+    response = requests.post(url, headers=headers, json=body, timeout=90)
+    payload: Dict = {}
     try:
-        response = requests.post(url, headers=headers, json=body, timeout=120)
-    except requests.RequestException as exc:
-        logger.error("MiniCPM5 request failed: %s", exc)
-        raise AiServiceError(
-            f"MiniCPM5 text generation request failed at {url}: {exc}"
-        ) from exc
+        payload = response.json()
+    except ValueError:
+        payload = {}
 
-    payload = response.json()
     if response.status_code >= 400:
         message = payload.get("error", {}).get("message", response.text)
-        logger.error("MiniCPM5 API error: %s", message)
-        raise AiServiceError(f"MiniCPM5 text generation failed: {message}")
+        raise AiServiceError(f"MiniCPM5 text generation failed at {url}: {message}")
+
     choices = payload.get("choices") or []
     if not choices:
         raise AiServiceError("MiniCPM5 returned an empty response")
@@ -170,6 +234,28 @@ def generate_product_copy(ocr_text: str) -> dict:
         raise AiServiceError("MiniCPM5 response is missing title or description")
 
     return {"title": title, "description": description}
+
+
+def generate_product_copy(ocr_text: str) -> dict:
+    settings = _ai_settings()
+    api_key = settings["minicpm5_api_key"]
+    errors: List[str] = []
+
+    for base_url, model in _llm_candidates():
+        try:
+            result = _request_minicpm_copy(base_url, model, ocr_text, api_key)
+            logger.info("Generated product copy via %s model=%s", base_url, model)
+            return result
+        except (AiServiceError, requests.RequestException) as exc:
+            message = str(exc)
+            errors.append(message)
+            logger.warning("LLM candidate failed (%s, %s): %s", base_url, model, message)
+
+    logger.warning(
+        "MiniCPM5 unavailable, using OCR fallback. Attempts: %s",
+        "; ".join(errors[:3]),
+    )
+    return _generate_from_ocr_fallback(ocr_text)
 
 
 def describe_product_from_image(image_bytes: bytes) -> dict:

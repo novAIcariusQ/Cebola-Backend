@@ -66,15 +66,26 @@ jobs:
             fi
             ./venv/bin/pip install --upgrade pip
             ./venv/bin/pip install -r requirements.txt
+            touch .env
+            set_env() {
+              KEY="$1"
+              VALUE="$2"
+              if grep -q "^${KEY}=" .env; then
+                sed -i "s|^${KEY}=.*|${KEY}=${VALUE}|" .env
+              else
+                echo "${KEY}=${VALUE}" >> .env
+              fi
+            }
+            if [ -n "${GOOGLE_VISION_API_KEY}" ]; then
+              set_env GOOGLE_VISION_API_KEY "${GOOGLE_VISION_API_KEY}"
+            fi
             MINICPM5_API_BASE_VALUE="${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}"
             MINICPM5_MODEL_VALUE="${MINICPM5_MODEL:-MiniCPM5}"
             MINICPM5_API_KEY_VALUE="${MINICPM5_API_KEY:-not-needed}"
-            cat > .env <<EOF
-            GOOGLE_VISION_API_KEY=${GOOGLE_VISION_API_KEY}
-            MINICPM5_API_BASE=${MINICPM5_API_BASE_VALUE}
-            MINICPM5_MODEL=${MINICPM5_MODEL_VALUE}
-            MINICPM5_API_KEY=${MINICPM5_API_KEY_VALUE}
-            EOF
+            set_env MINICPM5_API_BASE "${MINICPM5_API_BASE_VALUE}"
+            set_env MINICPM5_MODEL "${MINICPM5_MODEL_VALUE}"
+            set_env MINICPM5_API_KEY "${MINICPM5_API_KEY_VALUE}"
             chmod 600 .env
+            python3 -m py_compile api.py ai_utils.py
             systemctl restart ${{ steps.target.outputs.service }}
             systemctl is-active --quiet ${{ steps.target.outputs.service }}

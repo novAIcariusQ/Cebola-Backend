@@ -1008,43 +1008,20 @@ def describe_product(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
-    fn = (file.filename or "").lower()
-    if "onion" in fn or "cebola" in fn:
-        title = "Cebolas Orgânicas do Alentejo"
-        description = (
-            "Cebolas frescas colhidas manualmente numa quinta familiar no Alentejo. "
-            "Cultivadas de forma 100% biológica, sem pesticidas químicos. Apresentam um sabor intenso, "
-            "ligeiramente adocicado, ideais para refogados tradicionais portugueses e saladas frescas de verão. "
-            "Embaladas cuidadosamente em sacos de rede de 1 kg."
-        )
-    elif "cheese" in fn or "queijo" in fn:
-        title = "Queijo de Cabra Curado Artesanal"
-        description = (
-            "Queijo artesanal produzido com leite de cabra 100% puro de pastoreio livre. "
-            "Com uma cura mínima de 40 dias, apresenta uma textura firme, casca semi-dura e um sabor "
-            "tradicional marcante e levemente picante. Perfeito para acompanhar um bom vinho regional ou "
-            "para servir numa tábua de petiscos com doce regional."
-        )
-    elif "jam" in fn or "doce" in fn or "fig" in fn or "figo" in fn:
-        title = "Doce Caseiro de Figo da Época"
-        description = (
-            "Compota tradicional confecionada a fogo lento com figos frescos colhidos no ponto ideal de maturação. "
-            "Preparada segundo uma receita de família antiga, leva apenas figo regional e açúcar de cana biológico, "
-            "preservando a textura rústica e os pedaços da fruta. Excelente para harmonizar com queijo de cabra ou torradas."
-        )
-    elif "tomato" in fn or "tomate" in fn:
-        title = "Tomate Coração de Boi Biológico"
-        description = (
-            "Tomates de variedade antiga Coração de Boi, cultivados ao ar livre e maduros ao sol. "
-            "Sumarentos, carnudos e com baixa acidez, são o expoente máximo do sabor tradicional do tomate de horta. "
-            "Indispensáveis para uma autêntica salada algarvia com orégãos."
-        )
-    elif "bread" in fn or "pao" in fn or "pão" in fn:
-        title = "Pão de Trigo Alentejano em Forno de Lenha"
-        description = (
-            "Pão tradicional de fabrico artesanal, elaborado com farinha de trigo moída em mó de pedra "
-            "e fermentação natural lenta (massa mãe). Cozido em forno de lenha tradicional, o que lhe confere "
-            "uma côdea espessa, estaladiça e um miolo denso e aromático com excelente conservação."
+    """Runs Google Vision OCR, then MiniCPM5 or OCR-based fallback for title/description."""
+    try:
+        image_bytes = file.file.read()
+        if not image_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded image is empty",
+            )
+        return describe_product_from_image(image_bytes)
+    except AiServiceError as exc:
+        logger.error("AI product description failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
         )
     except HTTPException:
         raise
@@ -1052,13 +1029,8 @@ def describe_product(
         logger.error("Unexpected AI failure: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate product description"
+            detail="Failed to generate product description",
         )
-        
-    return {
-        "title": title,
-        "description": description
-    }
 
 
 # --- SUBSCRIPTION ENDPOINTS ---

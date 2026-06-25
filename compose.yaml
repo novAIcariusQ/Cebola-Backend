@@ -28,6 +28,10 @@ services:
       CEBOLA_DB_NAME: ${POSTGRES_DB:-cebola}
       CEBOLA_CORS_ORIGINS: http://localhost:5173,http://localhost:3000
       CEBOLA_ENABLE_DEMO_DATA: "true"
+      GOOGLE_VISION_API_KEY: ${GOOGLE_VISION_API_KEY:-}
+      MINICPM5_API_BASE: ${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}
+      MINICPM5_MODEL: ${MINICPM5_MODEL:-MiniCPM5}
+      MINICPM5_API_KEY: ${MINICPM5_API_KEY:-not-needed}
     volumes:
       - api_uploads:/app/uploads
     depends_on:
