@@ -41,17 +41,23 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,requirements.txt
+          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,requirements.txt,.env.example
           target: ${{ steps.target.outputs.remote_dir }}
           overwrite: true
 
       - name: Install dependencies and restart API
         uses: appleboy/ssh-action@v1.2.2
+        env:
+          GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
+          MINICPM5_API_BASE: ${{ secrets.MINICPM5_API_BASE }}
+          MINICPM5_MODEL: ${{ secrets.MINICPM5_MODEL }}
+          MINICPM5_API_KEY: ${{ secrets.MINICPM5_API_KEY }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
+          envs: GOOGLE_VISION_API_KEY,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
           script: |
             set -e
             cd ${{ steps.target.outputs.remote_dir }}
@@ -60,5 +66,15 @@ jobs:
             fi
             ./venv/bin/pip install --upgrade pip
             ./venv/bin/pip install -r requirements.txt
+            MINICPM5_API_BASE_VALUE="${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}"
+            MINICPM5_MODEL_VALUE="${MINICPM5_MODEL:-MiniCPM5}"
+            MINICPM5_API_KEY_VALUE="${MINICPM5_API_KEY:-not-needed}"
+            cat > .env <<EOF
+            GOOGLE_VISION_API_KEY=${GOOGLE_VISION_API_KEY}
+            MINICPM5_API_BASE=${MINICPM5_API_BASE_VALUE}
+            MINICPM5_MODEL=${MINICPM5_MODEL_VALUE}
+            MINICPM5_API_KEY=${MINICPM5_API_KEY_VALUE}
+            EOF
+            chmod 600 .env
             systemctl restart ${{ steps.target.outputs.service }}
             systemctl is-active --quiet ${{ steps.target.outputs.service }}

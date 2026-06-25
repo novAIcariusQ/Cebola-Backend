@@ -8,10 +8,18 @@ import requests
 
 logger = logging.getLogger("CebolaAPI")
 
-MINICPM5_API_BASE = os.getenv("MINICPM5_API_BASE", "http://127.0.0.1:8000/v1")
-MINICPM5_API_KEY = os.getenv("MINICPM5_API_KEY", "not-needed")
-MINICPM5_MODEL = os.getenv("MINICPM5_MODEL", "MiniCPM5")
-GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY", "")
+
+def _env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
+def _ai_settings() -> dict:
+    return {
+        "google_vision_api_key": _env("GOOGLE_VISION_API_KEY"),
+        "minicpm5_api_base": _env("MINICPM5_API_BASE", "http://127.0.0.1:8000/v1"),
+        "minicpm5_api_key": _env("MINICPM5_API_KEY", "not-needed"),
+        "minicpm5_model": _env("MINICPM5_MODEL", "MiniCPM5"),
+    }
 
 
 class AiServiceError(Exception):
@@ -34,10 +42,11 @@ def _parse_json_object(text: str) -> dict:
 
 
 def extract_text_with_google_vision(image_bytes: bytes) -> str:
-    if GOOGLE_VISION_API_KEY:
-        return _extract_text_via_rest_api(image_bytes)
+    settings = _ai_settings()
+    if settings["google_vision_api_key"]:
+        return _extract_text_via_rest_api(image_bytes, settings["google_vision_api_key"])
 
-    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    credentials_path = _env("GOOGLE_APPLICATION_CREDENTIALS")
     if credentials_path and os.path.isfile(credentials_path):
         return _extract_text_via_client_library(image_bytes)
 
@@ -46,9 +55,9 @@ def extract_text_with_google_vision(image_bytes: bytes) -> str:
     )
 
 
-def _extract_text_via_rest_api(image_bytes: bytes) -> str:
+def _extract_text_via_rest_api(image_bytes: bytes, api_key: str) -> str:
     encoded = base64.b64encode(image_bytes).decode("utf-8")
-    url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
+    url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
     payload = {
         "requests": [
             {
@@ -60,15 +69,23 @@ def _extract_text_via_rest_api(image_bytes: bytes) -> str:
 
     try:
         response = requests.post(url, json=payload, timeout=45)
-        response.raise_for_status()
     except requests.RequestException as exc:
         logger.error("Google Vision REST request failed: %s", exc)
-        raise AiServiceError("Google Vision OCR request failed") from exc
+        raise AiServiceError(f"Google Vision OCR request failed: {exc}") from exc
 
     data = response.json()
+    if response.status_code >= 400:
+        message = data.get("error", {}).get("message", response.text)
+        logger.error("Google Vision API error: %s", message)
+        raise AiServiceError(f"Google Vision OCR failed: {message}")
+
     responses = data.get("responses") or []
     if not responses:
         return ""
+
+    vision_error = responses[0].get("error", {}).get("message")
+    if vision_error:
+        raise AiServiceError(f"Google Vision OCR failed: {vision_error}")
 
     annotations = responses[0].get("textAnnotations") or []
     if not annotations:
@@ -100,6 +117,7 @@ def _extract_text_via_client_library(image_bytes: bytes) -> str:
 
 
 def generate_product_copy(ocr_text: str) -> dict:
+    settings = _ai_settings()
     prompt = (
         "You help Portuguese marketplace merchants create product listings.\n"
         "Use the text extracted from a product photo to write a title and description.\n\n"
@@ -110,13 +128,14 @@ def generate_product_copy(ocr_text: str) -> dict:
         "Write a description of 2-4 sentences suitable for e-commerce."
     )
 
-    url = f"{MINICPM5_API_BASE.rstrip('/')}/chat/completions"
+    base_url = settings["minicpm5_api_base"].rstrip("/")
+    url = f"{base_url}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {MINICPM5_API_KEY}",
+        "Authorization": f"Bearer {settings['minicpm5_api_key']}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": MINICPM5_MODEL,
+        "model": settings["minicpm5_model"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.4,
         "max_tokens": 512,
@@ -124,12 +143,17 @@ def generate_product_copy(ocr_text: str) -> dict:
 
     try:
         response = requests.post(url, headers=headers, json=body, timeout=120)
-        response.raise_for_status()
     except requests.RequestException as exc:
         logger.error("MiniCPM5 request failed: %s", exc)
-        raise AiServiceError("MiniCPM5 text generation request failed") from exc
+        raise AiServiceError(
+            f"MiniCPM5 text generation request failed at {url}: {exc}"
+        ) from exc
 
     payload = response.json()
+    if response.status_code >= 400:
+        message = payload.get("error", {}).get("message", response.text)
+        logger.error("MiniCPM5 API error: %s", message)
+        raise AiServiceError(f"MiniCPM5 text generation failed: {message}")
     choices = payload.get("choices") or []
     if not choices:
         raise AiServiceError("MiniCPM5 returned an empty response")

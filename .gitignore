@@ -24,6 +24,9 @@ cebola.db
 uploads/*
 !uploads/.gitkeep
 
+# Local environment
+.env
+
 # IDE and OS files
 .vscode/
 .idea/
