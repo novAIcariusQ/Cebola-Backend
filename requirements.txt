@@ -7,3 +7,8 @@ uvicorn[standard]==0.34.0
 requests==2.32.3
 google-cloud-vision==3.8.1
 python-dotenv==1.0.1
+stripe==15.3.0
+qrcode[pil]==8.2
+reportlab==5.0.0
+pillow==12.2.0
+prometheus-fastapi-instrumentator==6.1.0

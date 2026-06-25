@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import datetime
 import logging
 import random
@@ -11,19 +12,30 @@ _env_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_env_dir, ".env"))
 load_dotenv(os.path.join(_env_dir, ".env.local"), override=True)
 
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from database import db
 from auth_utils import (
     hash_password,
     verify_password,
     create_access_token,
-    get_current_user
+    get_current_user,
+    get_optional_user,
 )
 from ai_utils import AiServiceError, describe_product_from_image
+from stripe_utils import (
+    StripeNotConfiguredError,
+    create_checkout_session,
+    construct_webhook_event,
+    is_stripe_configured,
+    build_mock_payment_url,
+)
+from order_fulfillment import fulfill_paid_order
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -129,10 +141,17 @@ def get_shop_rating_stats(shop_id: str) -> dict:
 def format_user(row: dict) -> Optional[dict]:
     if not row:
         return None
+    order_ids = []
+    if row.get("order_ids"):
+        try:
+            order_ids = json.loads(row["order_ids"])
+        except json.JSONDecodeError:
+            order_ids = []
     return {
         "id": row["id"],
         "email": row["email"],
         "name": row["name"],
+        "orderIds": order_ids,
         "createdAt": row["created_at"]
     }
 
@@ -229,17 +248,14 @@ def format_customer_product(row: dict, shop_name: str) -> Optional[dict]:
         "isAvailable": is_available,
     }
 
-def format_customer_order_response(order_id: str, guest_order_id: str) -> dict:
-    payment_template = os.getenv(
-        "PAYMENT_URL_TEMPLATE",
-        "https://checkout.stripe.com/c/pay/{order_id}",
-    )
-    payment_url = payment_template.format(order_id=order_id, guest_order_id=guest_order_id)
-    return {
+def format_customer_order_response(order_id: str, guest_order_id: str, payment_url: Optional[str] = None) -> dict:
+    response = {
         "id": order_id,
         "guestOrderId": guest_order_id,
-        "paymentUrl": payment_url,
     }
+    if payment_url:
+        response["paymentUrl"] = payment_url
+    return response
 
 def _generate_guest_order_id() -> str:
     return f"{random.randint(10000000, 99999999)}"
@@ -861,7 +877,10 @@ def get_public_product(shopId: str, productId: str):
 
 
 @app.post("/api/orders")
-def create_customer_order(payload: CustomerOrderPayload):
+def create_customer_order(
+    payload: CustomerOrderPayload,
+    current_user: Optional[dict] = Depends(get_optional_user),
+):
     if not payload.items:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -876,6 +895,7 @@ def create_customer_order(payload: CustomerOrderPayload):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
 
     line_items = []
+    stripe_items = []
     total_amount = 0.0
     total_quantity = 0
 
@@ -905,10 +925,18 @@ def create_customer_order(payload: CustomerOrderPayload):
         total_amount += line_total
         total_quantity += item.quantity
         line_items.append((product, item.quantity, line_total))
+        stripe_items.append({
+            "title": product["title"],
+            "price": float(product["price"]),
+            "quantity": item.quantity,
+            "product_id": product["id"],
+        })
 
     order_id = str(uuid.uuid4())
     guest_order_id = _generate_guest_order_id()
     created_at = datetime.datetime.utcnow().isoformat() + "Z"
+    user_id = current_user["id"] if current_user else None
+    customer_email = current_user["email"] if current_user else None
 
     db.execute_write(
         "INSERT INTO orders (id, shop_id, user_id, guest_order_id, customer_name, customer_email, "
@@ -917,10 +945,10 @@ def create_customer_order(payload: CustomerOrderPayload):
         (
             order_id,
             payload.shopId,
-            None,
+            user_id,
             guest_order_id,
             None,
-            None,
+            customer_email,
             None,
             total_amount,
             total_quantity,
@@ -930,7 +958,7 @@ def create_customer_order(payload: CustomerOrderPayload):
         ),
     )
 
-    for product, quantity, line_total in line_items:
+    for product, quantity, _line_total in line_items:
         item_id = f"item-{uuid.uuid4().hex[:8]}"
         price_at_time = float(product["price"])
         db.execute_write(
@@ -947,14 +975,96 @@ def create_customer_order(payload: CustomerOrderPayload):
             ),
         )
 
-        new_quantity = int(product["quantity"]) - quantity
-        is_available = new_quantity > 0 and bool(product["is_available"])
+    try:
+        checkout_result = create_checkout_session(
+            order_id,
+            guest_order_id,
+            shop["name"],
+            stripe_items,
+            customer_email=customer_email,
+        )
+    except (StripeNotConfiguredError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    payment_url = checkout_result
+    if isinstance(checkout_result, tuple):
+        payment_url, session_id = checkout_result
         db.execute_write(
-            "UPDATE products SET quantity = %s, is_available = %s WHERE id = %s",
-            (new_quantity, is_available, product["id"]),
+            "UPDATE orders SET stripe_session_id = %s WHERE id = %s",
+            (session_id, order_id),
         )
 
-    return format_customer_order_response(order_id, guest_order_id)
+    return format_customer_order_response(order_id, guest_order_id, payment_url)
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    try:
+        event = construct_webhook_event(payload, signature)
+    except StripeNotConfiguredError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    except Exception as exc:
+        logger.warning("Stripe webhook verification failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid webhook signature",
+        ) from exc
+
+    event_type = event["type"]
+    if event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        order_id = session.get("client_reference_id") or session.get("metadata", {}).get("order_id")
+        if order_id:
+            payment_intent = session.get("payment_intent")
+            session_id = session.get("id")
+            if payment_intent or session_id:
+                db.execute_write(
+                    "UPDATE orders SET stripe_payment_intent_id = %s, stripe_session_id = %s WHERE id = %s",
+                    (payment_intent, session_id, order_id),
+                )
+            customer_email = (
+                (session.get("customer_details") or {}).get("email")
+                or session.get("customer_email")
+            )
+            fulfill_paid_order(order_id, customer_email=customer_email)
+    elif event_type == "checkout.session.expired":
+        session = event["data"]["object"]
+        order_id = session.get("client_reference_id") or session.get("metadata", {}).get("order_id")
+        if order_id:
+            order = db.execute_one("SELECT status FROM orders WHERE id = %s", (order_id,))
+            if order and order["status"] == "pending":
+                db.execute_write(
+                    "UPDATE orders SET status = %s WHERE id = %s",
+                    ("cancelled", order_id),
+                )
+
+    return {"received": True}
+
+
+@app.api_route("/api/orders/{orderId}/mock-pay", methods=["GET", "POST"])
+def mock_pay_order(orderId: str, request: Request):
+    if os.environ.get("CEBOLA_ENV") != "development" or is_stripe_configured():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    order = db.execute_one("SELECT * FROM orders WHERE id = %s", (orderId,))
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    fulfill_paid_order(orderId, customer_email=order.get("customer_email"))
+
+    if request.method == "GET":
+        success_url = os.environ.get(
+            "STRIPE_SUCCESS_URL",
+            "http://localhost:5173/checkout/success?session_id={CHECKOUT_SESSION_ID}",
+        ).replace("{CHECKOUT_SESSION_ID}", "mock")
+        return RedirectResponse(success_url, status_code=303)
+
+    return {"success": True, "orderId": orderId}
 
 
 @app.get("/api/orders/{orderId}")
@@ -967,7 +1077,10 @@ def get_customer_order(orderId: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     guest_order_id = order_row.get("guest_order_id") or ""
-    return format_customer_order_response(order_row["id"], guest_order_id)
+    payment_url = None
+    if order_row.get("status") == "pending":
+        payment_url = build_mock_payment_url(order_row["id"], guest_order_id)
+    return format_customer_order_response(order_row["id"], guest_order_id, payment_url)
 
 
 # --- UPLOAD & ARTIFICIAL INTELLIGENCE ENDPOINTS ---
@@ -1230,3 +1343,5 @@ def list_merchant_shop_ratings(
         "avgRating": stats["avgRating"],
         "ratingCount": stats["ratingCount"],
     }
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
