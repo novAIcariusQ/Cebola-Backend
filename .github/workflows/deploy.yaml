@@ -66,26 +66,28 @@ jobs:
             fi
             ./venv/bin/pip install --upgrade pip
             ./venv/bin/pip install -r requirements.txt
-            touch .env
+            touch .env.local
             set_env() {
-              KEY="$1"
-              VALUE="$2"
-              if grep -q "^${KEY}=" .env; then
-                sed -i "s|^${KEY}=.*|${KEY}=${VALUE}|" .env
+              FILE="$1"
+              KEY="$2"
+              VALUE="$3"
+              if grep -q "^${KEY}=" "${FILE}"; then
+                sed -i "s|^${KEY}=.*|${KEY}=${VALUE}|" "${FILE}"
               else
-                echo "${KEY}=${VALUE}" >> .env
+                echo "${KEY}=${VALUE}" >> "${FILE}"
               fi
             }
             if [ -n "${GOOGLE_VISION_API_KEY}" ]; then
-              set_env GOOGLE_VISION_API_KEY "${GOOGLE_VISION_API_KEY}"
+              set_env .env.local GOOGLE_VISION_API_KEY "${GOOGLE_VISION_API_KEY}"
             fi
             MINICPM5_API_BASE_VALUE="${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}"
             MINICPM5_MODEL_VALUE="${MINICPM5_MODEL:-MiniCPM5}"
             MINICPM5_API_KEY_VALUE="${MINICPM5_API_KEY:-not-needed}"
-            set_env MINICPM5_API_BASE "${MINICPM5_API_BASE_VALUE}"
-            set_env MINICPM5_MODEL "${MINICPM5_MODEL_VALUE}"
-            set_env MINICPM5_API_KEY "${MINICPM5_API_KEY_VALUE}"
-            chmod 600 .env
+            set_env .env.local MINICPM5_API_BASE "${MINICPM5_API_BASE_VALUE}"
+            set_env .env.local MINICPM5_MODEL "${MINICPM5_MODEL_VALUE}"
+            set_env .env.local MINICPM5_API_KEY "${MINICPM5_API_KEY_VALUE}"
+            chmod 600 .env.local
             python3 -m py_compile api.py ai_utils.py
             systemctl restart ${{ steps.target.outputs.service }}
             systemctl is-active --quiet ${{ steps.target.outputs.service }}
+            curl -fsS http://127.0.0.1:3001/api/auth/me >/dev/null
