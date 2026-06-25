@@ -90,8 +90,13 @@ jobs:
             python3 -m py_compile api.py ai_utils.py
             systemctl restart ${{ steps.target.outputs.service }}
             systemctl is-active --quiet ${{ steps.target.outputs.service }}
-            HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3001/api/auth/me || true)
-            if [ "${HTTP_CODE}" != "401" ] && [ "${HTTP_CODE}" != "200" ]; then
-              echo "Backend health check failed with HTTP ${HTTP_CODE}"
-              exit 1
-            fi
+            sleep 3
+            for attempt in 1 2 3 4 5; do
+              HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3001/api/auth/me 2>/dev/null || echo "000")
+              if [ "${HTTP_CODE}" = "401" ] || [ "${HTTP_CODE}" = "200" ]; then
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "Backend health check failed after restart"
+            exit 1
