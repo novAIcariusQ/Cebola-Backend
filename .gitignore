@@ -16,6 +16,13 @@ __pycache__/
 .env.local
 
 # Databases
+cebola.db
+*.db
+*.sqlite3
+
+# Uploads and temporary assets
+uploads/*
+!uploads/.gitkeep
 
 # IDE and OS files
 .vscode/
