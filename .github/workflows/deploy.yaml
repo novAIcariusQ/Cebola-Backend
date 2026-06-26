@@ -41,17 +41,26 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,requirements.txt
+          source: api.py,ai_utils.py,database.py,auth_utils.py,dbInfo.py,requirements.txt,.env.example
           target: ${{ steps.target.outputs.remote_dir }}
           overwrite: true
 
       - name: Install dependencies and restart API
         uses: appleboy/ssh-action@v1.2.2
+        env:
+          CEBOLA_SECRET_KEY: ${{ secrets.CEBOLA_SECRET_KEY }}
+          GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          MINICPM5_API_BASE: ${{ secrets.MINICPM5_API_BASE }}
+          MINICPM5_MODEL: ${{ secrets.MINICPM5_MODEL }}
+          MINICPM5_API_KEY: ${{ secrets.MINICPM5_API_KEY }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
+          envs: CEBOLA_SECRET_KEY,GOOGLE_VISION_API_KEY,GEMINI_API_KEY,GEMINI_MODEL,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
           script: |
             set -e
             cd ${{ steps.target.outputs.remote_dir }}
@@ -60,5 +69,47 @@ jobs:
             fi
             ./venv/bin/pip install --upgrade pip
             ./venv/bin/pip install -r requirements.txt
+            touch .env.local
+            set_env() {
+              FILE="$1"
+              KEY="$2"
+              VALUE="$3"
+              if grep -q "^${KEY}=" "${FILE}"; then
+                sed -i "s|^${KEY}=.*|${KEY}=${VALUE}|" "${FILE}"
+              else
+                echo "${KEY}=${VALUE}" >> "${FILE}"
+              fi
+            }
+            if [ -z "${CEBOLA_SECRET_KEY}" ]; then
+              echo "CEBOLA_SECRET_KEY secret is missing; JWT logins will break after each restart"
+            else
+              set_env .env.local CEBOLA_SECRET_KEY "${CEBOLA_SECRET_KEY}"
+            fi
+            if [ -n "${GOOGLE_VISION_API_KEY}" ]; then
+              set_env .env.local GOOGLE_VISION_API_KEY "${GOOGLE_VISION_API_KEY}"
+            fi
+            if [ -n "${GEMINI_API_KEY}" ]; then
+              set_env .env.local GEMINI_API_KEY "${GEMINI_API_KEY}"
+            fi
+            GEMINI_MODEL_VALUE="${GEMINI_MODEL:-gemini-2.0-flash}"
+            set_env .env.local GEMINI_MODEL "${GEMINI_MODEL_VALUE}"
+            MINICPM5_API_BASE_VALUE="${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}"
+            MINICPM5_MODEL_VALUE="${MINICPM5_MODEL:-MiniCPM5}"
+            MINICPM5_API_KEY_VALUE="${MINICPM5_API_KEY:-not-needed}"
+            set_env .env.local MINICPM5_API_BASE "${MINICPM5_API_BASE_VALUE}"
+            set_env .env.local MINICPM5_MODEL "${MINICPM5_MODEL_VALUE}"
+            set_env .env.local MINICPM5_API_KEY "${MINICPM5_API_KEY_VALUE}"
+            chmod 600 .env.local
+            python3 -m py_compile api.py ai_utils.py
             systemctl restart ${{ steps.target.outputs.service }}
             systemctl is-active --quiet ${{ steps.target.outputs.service }}
+            sleep 3
+            for attempt in 1 2 3 4 5; do
+              HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3001/api/auth/me 2>/dev/null || echo "000")
+              if [ "${HTTP_CODE}" = "401" ] || [ "${HTTP_CODE}" = "200" ]; then
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "Backend health check failed after restart"
+            exit 1
