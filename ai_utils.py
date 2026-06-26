@@ -35,7 +35,33 @@ GENERIC_LABELS = {
     "symbol",
     "design",
     "art",
+    "close-up",
+    "close up",
 }
+
+VAGUE_LABELS = {
+    "toe",
+    "foot",
+    "nail",
+    "finger",
+    "hand",
+    "skin",
+    "human body",
+    "body part",
+    "joint",
+    "thumb",
+}
+
+MARKETING_RULES = (
+    "Write like a professional Portuguese e-commerce listing for the Cebola marketplace.\n"
+    "- Title: catchy, commercial, under 80 characters; never raw image tags in English\n"
+    "- Description: 2-4 persuasive sentences focused on benefits, use, and buyer appeal\n"
+    "- Highlight quality, presentation, and why a customer would want this item\n"
+    "- End with a soft call to action (e.g. consulte disponibilidade, encomende, descubra)\n"
+    "- Never list technical vision labels (e.g. toe, foot, close-up) in the output\n"
+    "- Do not invent prices, weights, certifications, or stock levels\n"
+    "- Use Portuguese (Portugal), natural and sales-ready"
+)
 
 LABEL_PT = {
     "food": "alimentos",
@@ -347,19 +373,56 @@ def _build_vision_context(analysis: ImageAnalysis) -> str:
     return "\n\n".join(sections)
 
 
-def _description_from_labels(labels: List[str]) -> str:
-    translated = [_label_to_portuguese(label) for label in labels[:4]]
-    if len(translated) == 1:
-        subject = translated[0]
-        return (
-            f"Produto fotografado com aspeto visual associado a {subject.lower()}. "
-            "Revise o título e acrescente detalhes como quantidade, origem ou modo de utilização."
+def _product_like_labels(labels: List[str]) -> List[str]:
+    return [
+        label
+        for label in labels
+        if label.lower() not in VAGUE_LABELS and label.lower() not in GENERIC_LABELS
+    ]
+
+
+def _market_title_from_labels(labels: List[str], logos: List[str], ocr_title: str = "") -> str:
+    if ocr_title:
+        return _truncate(ocr_title.strip(" ,.;:-"), 80)
+    if logos:
+        return _truncate(logos[0], 80)
+
+    product_labels = _product_like_labels(labels)
+    if product_labels:
+        primary = _label_to_portuguese(product_labels[0]).title()
+        if len(product_labels) > 1:
+            secondary = _label_to_portuguese(product_labels[1]).title()
+            return _truncate(f"{primary} — {secondary}", 80)
+        return _truncate(f"{primary} selecionado", 80)
+
+    return "Artigo em destaque"
+
+
+def _market_description_from_labels(labels: List[str], logos: List[str]) -> str:
+    product_labels = _product_like_labels(labels)
+
+    if logos:
+        intro = (
+            f"Descubra este artigo da marca {logos[0]}, disponível no mercado Cebola. "
+            "Apresentação cuidada e aspeto profissional para uma compra confiante."
+        )
+    elif product_labels:
+        highlights = ", ".join(_label_to_portuguese(label).lower() for label in product_labels[:3])
+        intro = (
+            f"Artigo seleccionado com {highlights}, pensado para clientes que valorizam qualidade e detalhe. "
+            "Ideal para destacar na sua loja com uma apresentação clara e apelativa."
+        )
+    else:
+        intro = (
+            "Artigo exclusivo com excelente apresentação visual, pensado para quem procura algo diferenciado. "
+            "Destaca-se pelo aspeto cuidado e pela imagem de qualidade."
         )
 
-    joined = ", ".join(translated[:-1]) + f" e {translated[-1]}"
-    return (
-        f"Artigo apresentado na imagem com elementos visuais como {joined.lower()}. "
-        "Ajuste a descrição com preço, composição e outras informações relevantes para o cliente."
+    return _truncate(
+        f"{intro} "
+        "Perfeito para complementar o seu catálogo e atrair novos clientes. "
+        "Confirme quantidade, preço e condições de entrega antes de finalizar a compra.",
+        500,
     )
 
 
@@ -377,35 +440,39 @@ def _generate_smart_fallback(analysis: ImageAnalysis) -> dict:
             return {"title": title, "description": body}
 
         if logos:
-            description = (
-                f"{title}. Produto ou marca associada a {logos[0]}. "
-                "Complete a descrição com detalhes do artigo, composição e utilização."
+            description = _truncate(
+                f"{title} — referência {logos[0]}. "
+                "Artigo com excelente apresentação, ideal para clientes exigentes. "
+                "Consulte detalhes de composição, utilização e disponibilidade antes da compra.",
+                500,
             )
-            return {"title": title, "description": _truncate(description, 500)}
+            return {"title": title, "description": description}
 
         if labels:
-            description = f"{title}. {_description_from_labels(labels)}"
-            return {"title": title, "description": _truncate(description, 500)}
+            description = _market_description_from_labels(labels, logos)
+            return {"title": _market_title_from_labels(labels, logos, title), "description": description}
 
         return {
             "title": title,
-            "description": (
-                f"{title}. Texto identificado na imagem; complete a descrição com detalhes do produto."
+            "description": _truncate(
+                f"{title}. Produto com boa apresentação comercial, pronto para integrar no seu catálogo Cebola. "
+                "Complete com preço, quantidade e detalhes de envio.",
+                500,
             ),
         }
 
     if logos:
         title = _truncate(logos[0], 80)
-        description = (
-            f"Produto relacionado com a marca {logos[0]}. "
-            f"{_description_from_labels(labels) if labels else 'Adicione detalhes sobre o artigo, composição e utilização.'}"
-        )
-        return {"title": title, "description": _truncate(description, 500)}
+        return {
+            "title": title,
+            "description": _market_description_from_labels(labels, logos),
+        }
 
     if labels:
-        primary = _label_to_portuguese(labels[0])
-        title = _truncate(primary.capitalize(), 80)
-        return {"title": title, "description": _description_from_labels(labels)}
+        return {
+            "title": _market_title_from_labels(labels, logos),
+            "description": _market_description_from_labels(labels, logos),
+        }
 
     return {
         "title": "Novo produto",
@@ -438,18 +505,13 @@ def _generate_with_gemini_vision(image_bytes: bytes, analysis: ImageAnalysis) ->
     mime_type = _detect_image_mime(image_bytes)
     vision_context = _build_vision_context(analysis)
     prompt = (
-        "You help Portuguese marketplace merchants draft product listings from photos.\n"
-        "Look at the image and describe what is actually visible.\n"
+        "You help Portuguese marketplace merchants write sales-ready product listings from photos.\n"
+        "Look at the image and write copy that would attract buyers on an online marketplace.\n"
         "Use the automated hints below only as support; trust the photo first.\n\n"
         f"{vision_context}\n\n"
         "Return ONLY valid JSON, without markdown:\n"
         '{"title": "...", "description": "..."}\n\n'
-        "Rules:\n"
-        "- Write in Portuguese (Portugal)\n"
-        "- Title under 80 characters, specific to what is shown\n"
-        "- Description: 2-4 sentences suitable for e-commerce\n"
-        "- Describe the scene honestly even if unusual\n"
-        "- Do not invent prices, weights, or certifications"
+        f"{MARKETING_RULES}"
     )
 
     url = (
@@ -466,7 +528,7 @@ def _generate_with_gemini_vision(image_bytes: bytes, analysis: ImageAnalysis) ->
             }
         ],
         "generationConfig": {
-            "temperature": 0.4,
+            "temperature": 0.55,
             "maxOutputTokens": 512,
         },
     }
@@ -518,16 +580,13 @@ def _llm_candidates() -> List[Tuple[str, str]]:
 
 def _request_minicpm_copy(base_url: str, model: str, vision_context: str, api_key: str) -> dict:
     prompt = (
-        "You help Portuguese marketplace merchants create product listings.\n"
-        "Use the image analysis below (text, brands/logos, and visual labels) to write a title and description.\n"
-        "If there is little or no text, infer a sensible product listing from logos and visual content.\n"
-        "Do not invent specific prices, weights, or certifications that are not supported by the analysis.\n"
-        "Avoid generic filler; be specific to what was detected.\n\n"
+        "You help Portuguese marketplace merchants create sales-ready product listings.\n"
+        "Use the image analysis below to write copy that helps sell the item on an online marketplace.\n"
+        "If there is little or no text, infer a compelling listing from logos and visual content.\n\n"
         f"{vision_context}\n\n"
         "Respond with valid JSON only, without markdown:\n"
         '{"title": "...", "description": "..."}\n\n'
-        "Write in Portuguese. Keep the title under 80 characters. "
-        "Write a description of 2-4 sentences suitable for e-commerce."
+        f"{MARKETING_RULES}"
     )
 
     url = f"{base_url.rstrip('/')}/chat/completions"
@@ -538,7 +597,7 @@ def _request_minicpm_copy(base_url: str, model: str, vision_context: str, api_ke
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
+        "temperature": 0.55,
         "max_tokens": 512,
     }
 
