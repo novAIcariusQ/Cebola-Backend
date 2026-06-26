@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 from typing import Dict, List, Tuple, TypedDict
 
@@ -37,6 +38,8 @@ GENERIC_LABELS = {
     "art",
     "close-up",
     "close up",
+    "clip art",
+    "game",
 }
 
 VAGUE_LABELS = {
@@ -55,12 +58,68 @@ VAGUE_LABELS = {
 MARKETING_RULES = (
     "Write like a professional Portuguese e-commerce listing for the Cebola marketplace.\n"
     "- Title: catchy, commercial, under 80 characters; never raw image tags in English\n"
-    "- Description: 2-4 persuasive sentences focused on benefits, use, and buyer appeal\n"
+    "- Description: 2-4 persuasive sentences; vary tone and structure each time\n"
     "- Highlight quality, presentation, and why a customer would want this item\n"
-    "- End with a soft call to action (e.g. consulte disponibilidade, encomende, descubra)\n"
-    "- Never list technical vision labels (e.g. toe, foot, close-up) in the output\n"
+    "- Use different openings, benefits, and CTAs; avoid repeating the same template\n"
+    "- Never list technical vision labels (e.g. toe, foot, close-up, clip art) in the output\n"
     "- Do not invent prices, weights, certifications, or stock levels\n"
     "- Use Portuguese (Portugal), natural and sales-ready"
+)
+
+TITLE_SUFFIXES = (
+    "selecionado",
+    "premium",
+    "exclusivo",
+    "em destaque",
+    "original",
+    "da loja",
+    "especial",
+)
+
+TITLE_JOINERS = (" — ", " | ", ": ", " · ")
+
+DESCRIPTION_INTROS_BRAND = (
+    "Apresentamos {brand}, uma peça pensada para quem gosta de comprar com confiança.",
+    "{brand} chega à Cebola com uma imagem forte e apresentação cuidada.",
+    "Da marca {brand}, este artigo destaca-se logo à primeira vista.",
+)
+
+DESCRIPTION_INTROS_LABELS = (
+    "Um artigo com inspiração em {highlights}, feito para chamar atenção na vitrine.",
+    "Combina {highlights} num produto com aspeto cuidado e apelo comercial.",
+    "Inspirado em {highlights}, ideal para quem procura algo diferente no catálogo.",
+    "Com referências visuais a {highlights}, este item traz personalidade à loja.",
+)
+
+DESCRIPTION_INTROS_GENERIC = (
+    "Peça com personalidade própria, pronta para entrar no seu catálogo.",
+    "Artigo visualmente marcante, pensado para gerar curiosidade e cliques.",
+    "Produto com boa presença na fotografia e aspeto comercial imediato.",
+)
+
+DESCRIPTION_MIDDLES = (
+    "Funciona bem para ofertas sazonais, novidades ou destaques da semana.",
+    "Aposta segura para clientes que valorizam originalidade e boa apresentação.",
+    "Transmite qualidade visual e facilita a decisão de compra online.",
+    "Dá um toque distinto à loja sem complicar a experiência do cliente.",
+    "Combina bem com campanhas promocionais e vitrines temáticas.",
+)
+
+DESCRIPTION_CTAS = (
+    "Veja quantidade, preço e envio antes de publicar.",
+    "Ajuste stock e condições de entrega conforme o seu negócio.",
+    "Confirme detalhes finais e coloque já à venda.",
+    "Revise preço e disponibilidade antes de finalizar o anúncio.",
+    "Complete os detalhes comerciais e publique quando estiver pronto.",
+)
+
+WRITING_STYLES = (
+    "Use a warm, friendly boutique tone.",
+    "Use a concise, premium brand tone.",
+    "Use an energetic, promotional tone.",
+    "Use a descriptive artisan-market tone.",
+    "Use a playful, catchy tone suitable for impulse buys.",
+    "Use a clear, practical tone focused on usefulness.",
 )
 
 LABEL_PT = {
@@ -99,6 +158,9 @@ LABEL_PT = {
     "bucket": "balde",
     "blue": "azul",
     "tile": "azulejo",
+    "game": "jogo",
+    "slot machine": "slot machine",
+    "luck": "sorte",
 }
 
 
@@ -381,49 +443,74 @@ def _product_like_labels(labels: List[str]) -> List[str]:
     ]
 
 
+def _random_style_hint() -> str:
+    return random.choice(WRITING_STYLES)
+
+
+def _highlights_phrase(labels: List[str]) -> str:
+    translated = [_label_to_portuguese(label).lower() for label in _product_like_labels(labels)[:3]]
+    if not translated:
+        return "detalhes únicos"
+    if len(translated) == 1:
+        return translated[0]
+    if len(translated) == 2:
+        return f"{translated[0]} e {translated[1]}"
+    return f"{translated[0]}, {translated[1]} e {translated[2]}"
+
+
 def _market_title_from_labels(labels: List[str], logos: List[str], ocr_title: str = "") -> str:
     if ocr_title:
         return _truncate(ocr_title.strip(" ,.;:-"), 80)
     if logos:
-        return _truncate(logos[0], 80)
+        patterns = (
+            "{brand}",
+            "{brand} — edição Cebola",
+            "{brand} | coleção",
+            "Novidade {brand}",
+        )
+        return _truncate(random.choice(patterns).format(brand=logos[0]), 80)
 
     product_labels = _product_like_labels(labels)
     if product_labels:
         primary = _label_to_portuguese(product_labels[0]).title()
-        if len(product_labels) > 1:
+        suffix = random.choice(TITLE_SUFFIXES)
+        if len(product_labels) > 1 and random.random() < 0.6:
             secondary = _label_to_portuguese(product_labels[1]).title()
-            return _truncate(f"{primary} — {secondary}", 80)
-        return _truncate(f"{primary} selecionado", 80)
+            joiner = random.choice(TITLE_JOINERS)
+            return _truncate(f"{primary}{joiner}{secondary}", 80)
+        patterns = (
+            f"{primary} {suffix}",
+            f"{suffix.title()} {primary}",
+            f"{primary} da loja",
+            f"Linha {primary}",
+        )
+        return _truncate(random.choice(patterns), 80)
 
-    return "Artigo em destaque"
+    return random.choice(
+        (
+            "Artigo em destaque",
+            "Novidade da loja",
+            "Peça exclusiva",
+            "Produto da semana",
+            "Escolha especial Cebola",
+        )
+    )
 
 
 def _market_description_from_labels(labels: List[str], logos: List[str]) -> str:
     product_labels = _product_like_labels(labels)
+    highlights = _highlights_phrase(labels)
 
     if logos:
-        intro = (
-            f"Descubra este artigo da marca {logos[0]}, disponível no mercado Cebola. "
-            "Apresentação cuidada e aspeto profissional para uma compra confiante."
-        )
+        intro = random.choice(DESCRIPTION_INTROS_BRAND).format(brand=logos[0])
     elif product_labels:
-        highlights = ", ".join(_label_to_portuguese(label).lower() for label in product_labels[:3])
-        intro = (
-            f"Artigo seleccionado com {highlights}, pensado para clientes que valorizam qualidade e detalhe. "
-            "Ideal para destacar na sua loja com uma apresentação clara e apelativa."
-        )
+        intro = random.choice(DESCRIPTION_INTROS_LABELS).format(highlights=highlights)
     else:
-        intro = (
-            "Artigo exclusivo com excelente apresentação visual, pensado para quem procura algo diferenciado. "
-            "Destaca-se pelo aspeto cuidado e pela imagem de qualidade."
-        )
+        intro = random.choice(DESCRIPTION_INTROS_GENERIC)
 
-    return _truncate(
-        f"{intro} "
-        "Perfeito para complementar o seu catálogo e atrair novos clientes. "
-        "Confirme quantidade, preço e condições de entrega antes de finalizar a compra.",
-        500,
-    )
+    middle = random.choice(DESCRIPTION_MIDDLES)
+    cta = random.choice(DESCRIPTION_CTAS)
+    return _truncate(f"{intro} {middle} {cta}", 500)
 
 
 def _generate_smart_fallback(analysis: ImageAnalysis) -> dict:
@@ -441,9 +528,12 @@ def _generate_smart_fallback(analysis: ImageAnalysis) -> dict:
 
         if logos:
             description = _truncate(
-                f"{title} — referência {logos[0]}. "
-                "Artigo com excelente apresentação, ideal para clientes exigentes. "
-                "Consulte detalhes de composição, utilização e disponibilidade antes da compra.",
+                random.choice(
+                    (
+                        f"{title} — referência {logos[0]}. {random.choice(DESCRIPTION_MIDDLES)} {random.choice(DESCRIPTION_CTAS)}",
+                        f"Edição {logos[0]} com foco em {title}. {random.choice(DESCRIPTION_MIDDLES)} {random.choice(DESCRIPTION_CTAS)}",
+                    )
+                ),
                 500,
             )
             return {"title": title, "description": description}
@@ -455,8 +545,12 @@ def _generate_smart_fallback(analysis: ImageAnalysis) -> dict:
         return {
             "title": title,
             "description": _truncate(
-                f"{title}. Produto com boa apresentação comercial, pronto para integrar no seu catálogo Cebola. "
-                "Complete com preço, quantidade e detalhes de envio.",
+                random.choice(
+                    (
+                        f"{title}. {random.choice(DESCRIPTION_INTROS_GENERIC)} {random.choice(DESCRIPTION_CTAS)}",
+                        f"{title} entra no catálogo com boa presença visual. {random.choice(DESCRIPTION_MIDDLES)} {random.choice(DESCRIPTION_CTAS)}",
+                    )
+                ),
                 500,
             ),
         }
@@ -508,6 +602,8 @@ def _generate_with_gemini_vision(image_bytes: bytes, analysis: ImageAnalysis) ->
         "You help Portuguese marketplace merchants write sales-ready product listings from photos.\n"
         "Look at the image and write copy that would attract buyers on an online marketplace.\n"
         "Use the automated hints below only as support; trust the photo first.\n\n"
+        f"Style for this listing: {_random_style_hint()}\n"
+        "Vary sentence structure and vocabulary; do not reuse the same template as previous listings.\n\n"
         f"{vision_context}\n\n"
         "Return ONLY valid JSON, without markdown:\n"
         '{"title": "...", "description": "..."}\n\n'
@@ -528,7 +624,8 @@ def _generate_with_gemini_vision(image_bytes: bytes, analysis: ImageAnalysis) ->
             }
         ],
         "generationConfig": {
-            "temperature": 0.55,
+            "temperature": 0.9,
+            "topP": 0.95,
             "maxOutputTokens": 512,
         },
     }
@@ -583,6 +680,8 @@ def _request_minicpm_copy(base_url: str, model: str, vision_context: str, api_ke
         "You help Portuguese marketplace merchants create sales-ready product listings.\n"
         "Use the image analysis below to write copy that helps sell the item on an online marketplace.\n"
         "If there is little or no text, infer a compelling listing from logos and visual content.\n\n"
+        f"Style for this listing: {_random_style_hint()}\n"
+        "Vary sentence structure and vocabulary; do not reuse the same template as previous listings.\n\n"
         f"{vision_context}\n\n"
         "Respond with valid JSON only, without markdown:\n"
         '{"title": "...", "description": "..."}\n\n'
@@ -597,7 +696,7 @@ def _request_minicpm_copy(base_url: str, model: str, vision_context: str, api_ke
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.55,
+        "temperature": 0.85,
         "max_tokens": 512,
     }
 
