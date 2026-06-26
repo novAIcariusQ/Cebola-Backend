@@ -1010,7 +1010,7 @@ def describe_product(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
-    """Runs Google Vision OCR, then MiniCPM5 or OCR-based fallback for title/description."""
+    """Runs Google Vision analysis (text, labels, logos), then MiniCPM5 or smart fallback."""
     try:
         image_bytes = file.file.read()
         if not image_bytes:
