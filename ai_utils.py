@@ -62,6 +62,17 @@ LABEL_PT = {
     "jewelry": "joalharia",
     "cosmetics": "cosméticos",
     "packaged goods": "produto embalado",
+    "person": "pessoa",
+    "human": "pessoa",
+    "room": "divisão",
+    "bathroom": "casa de banho",
+    "shower": "chuveiro",
+    "plastic": "plástico",
+    "container": "recipiente",
+    "barrel": "barril",
+    "bucket": "balde",
+    "blue": "azul",
+    "tile": "azulejo",
 }
 
 
@@ -74,6 +85,7 @@ class ImageAnalysis(TypedDict):
     ocr_text: str
     labels: List[ScoredLabel]
     logos: List[ScoredLabel]
+    objects: List[ScoredLabel]
 
 
 def _env(name: str, default: str = "") -> str:
@@ -83,6 +95,8 @@ def _env(name: str, default: str = "") -> str:
 def _ai_settings() -> dict:
     return {
         "google_vision_api_key": _env("GOOGLE_VISION_API_KEY"),
+        "gemini_api_key": _env("GEMINI_API_KEY"),
+        "gemini_model": _env("GEMINI_MODEL", "gemini-2.0-flash"),
         "minicpm5_api_base": _env("MINICPM5_API_BASE"),
         "minicpm5_api_key": _env("MINICPM5_API_KEY", "not-needed"),
         "minicpm5_model": _env("MINICPM5_MODEL"),
@@ -124,7 +138,7 @@ def _parse_scored_items(items: List[dict]) -> List[ScoredLabel]:
 
 
 def _empty_analysis() -> ImageAnalysis:
-    return {"ocr_text": "", "labels": [], "logos": []}
+    return {"ocr_text": "", "labels": [], "logos": [], "objects": []}
 
 
 def analyze_image_with_google_vision(image_bytes: bytes) -> ImageAnalysis:
@@ -154,8 +168,9 @@ def _analyze_via_rest_api(image_bytes: bytes, api_key: str) -> ImageAnalysis:
                 "image": {"content": encoded},
                 "features": [
                     {"type": "TEXT_DETECTION", "maxResults": 1},
-                    {"type": "LABEL_DETECTION", "maxResults": 12},
+                    {"type": "LABEL_DETECTION", "maxResults": 15},
                     {"type": "LOGO_DETECTION", "maxResults": 5},
+                    {"type": "OBJECT_LOCALIZATION", "maxResults": 10},
                 ],
             }
         ]
@@ -189,7 +204,23 @@ def _analyze_via_rest_api(image_bytes: bytes, api_key: str) -> ImageAnalysis:
         "ocr_text": ocr_text,
         "labels": _parse_scored_items(result.get("labelAnnotations")),
         "logos": _parse_scored_items(result.get("logoAnnotations")),
+        "objects": _parse_object_annotations(result.get("localizedObjectAnnotations")),
     }
+
+
+def _parse_object_annotations(items: List[dict]) -> List[ScoredLabel]:
+    parsed: List[ScoredLabel] = []
+    for item in items or []:
+        description = str(item.get("name", "")).strip()
+        if not description:
+            continue
+        parsed.append(
+            {
+                "description": description,
+                "score": float(item.get("score", 0) or 0),
+            }
+        )
+    return parsed
 
 
 def _analyze_via_client_library(image_bytes: bytes) -> ImageAnalysis:
@@ -207,8 +238,9 @@ def _analyze_via_client_library(image_bytes: bytes) -> ImageAnalysis:
             "image": image,
             "features": [
                 {"type_": vision.Feature.Type.TEXT_DETECTION},
-                {"type_": vision.Feature.Type.LABEL_DETECTION, "max_results": 12},
+                {"type_": vision.Feature.Type.LABEL_DETECTION, "max_results": 15},
                 {"type_": vision.Feature.Type.LOGO_DETECTION, "max_results": 5},
+                {"type_": vision.Feature.Type.OBJECT_LOCALIZATION, "max_results": 10},
             ],
         }
     )
@@ -229,8 +261,13 @@ def _analyze_via_client_library(image_bytes: bytes) -> ImageAnalysis:
         for logo in result.logo_annotations
         if logo.description
     ]
+    objects = [
+        {"description": obj.name, "score": float(obj.score)}
+        for obj in result.localized_object_annotations
+        if obj.name
+    ]
 
-    return {"ocr_text": ocr_text, "labels": labels, "logos": logos}
+    return {"ocr_text": ocr_text, "labels": labels, "logos": logos, "objects": objects}
 
 
 def _normalize_ocr_lines(ocr_text: str) -> List[str]:
@@ -253,6 +290,20 @@ def _meaningful_labels(labels: List[ScoredLabel], min_score: float = 0.62) -> Li
         if description not in meaningful:
             meaningful.append(description)
     return meaningful[:6]
+
+
+def _visual_terms(analysis: ImageAnalysis, min_score: float = 0.45) -> List[str]:
+    terms: List[str] = []
+    for source in (analysis["objects"], analysis["labels"]):
+        for item in source:
+            description = item["description"].strip()
+            if item["score"] < min_score:
+                continue
+            if description.lower() in GENERIC_LABELS:
+                continue
+            if description not in terms:
+                terms.append(description)
+    return terms[:8]
 
 
 def _label_to_portuguese(label: str) -> str:
@@ -278,12 +329,20 @@ def _build_vision_context(analysis: ImageAnalysis) -> str:
     if logos:
         sections.append("Detected brands/logos: " + ", ".join(logos))
 
+    objects = [item["description"] for item in analysis["objects"][:6]]
+    if objects:
+        sections.append("Detected objects: " + ", ".join(objects))
+
     labels = _meaningful_labels(analysis["labels"])
     if labels:
         sections.append("Visual content detected: " + ", ".join(labels))
 
     if len(sections) == 1 and not ocr_text:
-        sections.append("Visual content detected: (no strong labels)")
+        relaxed = _visual_terms(analysis)
+        if relaxed:
+            sections.append("Visual content detected: " + ", ".join(relaxed))
+        else:
+            sections.append("Visual content detected: (no strong labels)")
 
     return "\n\n".join(sections)
 
@@ -307,7 +366,7 @@ def _description_from_labels(labels: List[str]) -> str:
 def _generate_smart_fallback(analysis: ImageAnalysis) -> dict:
     lines = _normalize_ocr_lines(analysis["ocr_text"])
     logos = [item["description"] for item in analysis["logos"][:3]]
-    labels = _meaningful_labels(analysis["labels"])
+    labels = _meaningful_labels(analysis["labels"]) or _visual_terms(analysis)
 
     if lines:
         title = _truncate(lines[0], 80).strip(" ,.;:-")
@@ -351,10 +410,93 @@ def _generate_smart_fallback(analysis: ImageAnalysis) -> dict:
     return {
         "title": "Novo produto",
         "description": (
-            "Não foi possível identificar texto ou elementos claros na imagem. "
-            "Tente uma foto mais próxima, com boa luz e o produto em destaque."
+            "Não foi possível analisar a imagem com detalhe suficiente. "
+            "Configure GEMINI_API_KEY no servidor para descrições visuais completas, "
+            "ou envie uma foto mais próxima com boa luz."
         ),
     }
+
+
+def _detect_image_mime(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG"):
+        return "image/png"
+    if image_bytes.startswith(b"GIF"):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _generate_with_gemini_vision(image_bytes: bytes, analysis: ImageAnalysis) -> dict:
+    settings = _ai_settings()
+    api_key = settings["gemini_api_key"]
+    model = settings["gemini_model"]
+    if not api_key:
+        raise AiServiceError("GEMINI_API_KEY is not configured")
+
+    encoded = base64.b64encode(image_bytes).decode("utf-8")
+    mime_type = _detect_image_mime(image_bytes)
+    vision_context = _build_vision_context(analysis)
+    prompt = (
+        "You help Portuguese marketplace merchants draft product listings from photos.\n"
+        "Look at the image and describe what is actually visible.\n"
+        "Use the automated hints below only as support; trust the photo first.\n\n"
+        f"{vision_context}\n\n"
+        "Return ONLY valid JSON, without markdown:\n"
+        '{"title": "...", "description": "..."}\n\n'
+        "Rules:\n"
+        "- Write in Portuguese (Portugal)\n"
+        "- Title under 80 characters, specific to what is shown\n"
+        "- Description: 2-4 sentences suitable for e-commerce\n"
+        "- Describe the scene honestly even if unusual\n"
+        "- Do not invent prices, weights, or certifications"
+    )
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        f"?key={api_key}"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": encoded}},
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 512,
+        },
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=90)
+    except requests.RequestException as exc:
+        raise AiServiceError(f"Gemini vision request failed: {exc}") from exc
+
+    data = response.json()
+    if response.status_code >= 400:
+        message = data.get("error", {}).get("message", response.text)
+        raise AiServiceError(f"Gemini vision failed: {message}")
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise AiServiceError("Gemini vision returned no candidates")
+
+    parts = candidates[0].get("content", {}).get("parts") or []
+    content = next((part.get("text", "") for part in parts if part.get("text")), "")
+    if not content:
+        raise AiServiceError("Gemini vision returned an empty message")
+
+    parsed = _parse_json_object(content)
+    title = str(parsed.get("title", "")).strip()
+    description = str(parsed.get("description", "")).strip()
+    if not title or not description:
+        raise AiServiceError("Gemini vision response is missing title or description")
+
+    return {"title": title, "description": description}
 
 
 def _llm_candidates() -> List[Tuple[str, str]]:
@@ -455,9 +597,20 @@ def generate_product_copy(analysis: ImageAnalysis) -> dict:
 def describe_product_from_image(image_bytes: bytes) -> dict:
     analysis = analyze_image_with_google_vision(image_bytes)
     logger.info(
-        "Google Vision analysis: %s chars of text, %s labels, %s logos",
+        "Google Vision analysis: %s chars of text, %s labels, %s logos, %s objects",
         len(analysis["ocr_text"]),
         len(analysis["labels"]),
         len(analysis["logos"]),
+        len(analysis["objects"]),
     )
+
+    settings = _ai_settings()
+    if settings["gemini_api_key"]:
+        try:
+            result = _generate_with_gemini_vision(image_bytes, analysis)
+            logger.info("Generated product copy via Gemini vision model=%s", settings["gemini_model"])
+            return result
+        except (AiServiceError, requests.RequestException) as exc:
+            logger.warning("Gemini vision failed, using text pipeline: %s", exc)
+
     return generate_product_copy(analysis)

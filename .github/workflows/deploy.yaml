@@ -50,6 +50,8 @@ jobs:
         env:
           CEBOLA_SECRET_KEY: ${{ secrets.CEBOLA_SECRET_KEY }}
           GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           MINICPM5_API_BASE: ${{ secrets.MINICPM5_API_BASE }}
           MINICPM5_MODEL: ${{ secrets.MINICPM5_MODEL }}
           MINICPM5_API_KEY: ${{ secrets.MINICPM5_API_KEY }}
@@ -58,7 +60,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: CEBOLA_SECRET_KEY,GOOGLE_VISION_API_KEY,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
+          envs: CEBOLA_SECRET_KEY,GOOGLE_VISION_API_KEY,GEMINI_API_KEY,GEMINI_MODEL,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
           script: |
             set -e
             cd ${{ steps.target.outputs.remote_dir }}
@@ -86,6 +88,11 @@ jobs:
             if [ -n "${GOOGLE_VISION_API_KEY}" ]; then
               set_env .env.local GOOGLE_VISION_API_KEY "${GOOGLE_VISION_API_KEY}"
             fi
+            if [ -n "${GEMINI_API_KEY}" ]; then
+              set_env .env.local GEMINI_API_KEY "${GEMINI_API_KEY}"
+            fi
+            GEMINI_MODEL_VALUE="${GEMINI_MODEL:-gemini-2.0-flash}"
+            set_env .env.local GEMINI_MODEL "${GEMINI_MODEL_VALUE}"
             MINICPM5_API_BASE_VALUE="${MINICPM5_API_BASE:-http://127.0.0.1:8000/v1}"
             MINICPM5_MODEL_VALUE="${MINICPM5_MODEL:-MiniCPM5}"
             MINICPM5_API_KEY_VALUE="${MINICPM5_API_KEY:-not-needed}"
