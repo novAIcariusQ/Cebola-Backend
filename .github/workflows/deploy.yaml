@@ -48,6 +48,7 @@ jobs:
       - name: Install dependencies and restart API
         uses: appleboy/ssh-action@v1.2.2
         env:
+          CEBOLA_SECRET_KEY: ${{ secrets.CEBOLA_SECRET_KEY }}
           GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
           MINICPM5_API_BASE: ${{ secrets.MINICPM5_API_BASE }}
           MINICPM5_MODEL: ${{ secrets.MINICPM5_MODEL }}
@@ -57,7 +58,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: GOOGLE_VISION_API_KEY,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
+          envs: CEBOLA_SECRET_KEY,GOOGLE_VISION_API_KEY,MINICPM5_API_BASE,MINICPM5_MODEL,MINICPM5_API_KEY
           script: |
             set -e
             cd ${{ steps.target.outputs.remote_dir }}
@@ -77,6 +78,11 @@ jobs:
                 echo "${KEY}=${VALUE}" >> "${FILE}"
               fi
             }
+            if [ -z "${CEBOLA_SECRET_KEY}" ]; then
+              echo "CEBOLA_SECRET_KEY secret is missing; JWT logins will break after each restart"
+            else
+              set_env .env.local CEBOLA_SECRET_KEY "${CEBOLA_SECRET_KEY}"
+            fi
             if [ -n "${GOOGLE_VISION_API_KEY}" ]; then
               set_env .env.local GOOGLE_VISION_API_KEY "${GOOGLE_VISION_API_KEY}"
             fi
